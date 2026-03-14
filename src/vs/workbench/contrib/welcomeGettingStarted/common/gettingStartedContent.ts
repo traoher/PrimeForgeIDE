@@ -236,7 +236,7 @@ function createCopilotSetupStep(id: string, button: string, when: string, includ
 export const walkthroughs: GettingStartedWalkthroughContent = [
 	{
 		id: 'Setup',
-		title: localize('gettingStarted.setup.title', "Get Started with VS Code"),
+		title: localize('gettingStarted.setup.title', "Get Started with Proton9"),
 		description: localize('gettingStarted.setup.description', "Customize your editor, learn the basics, and start coding"),
 		isFeatured: true,
 		icon: setupIcon,
@@ -352,7 +352,7 @@ export const walkthroughs: GettingStartedWalkthroughContent = [
 
 	{
 		id: 'SetupWeb',
-		title: localize('gettingStarted.setupWeb.title', "Get Started with VS Code for the Web"),
+		title: localize('gettingStarted.setupWeb.title', "Get Started with Proton9 for the Web"),
 		description: localize('gettingStarted.setupWeb.description', "Customize your editor, learn the basics, and start coding"),
 		isFeatured: true,
 		icon: setupIcon,
