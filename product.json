@@ -1,6 +1,6 @@
 {
 	"nameShort": "Proton9 IDE",
-	"nameLong": "Proton9 IDE",
+	"nameLong": "Proton9",
 	"applicationName": "proton9-ide",
 	"dataFolderName": ".proton9-ide",
 	"win32MutexName": "proton9ide",
