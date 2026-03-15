@@ -309,6 +309,77 @@ class ForgeServer:
             await self.write_file(data, websocket)
         elif msg_type == "list_workspace_files":
             await self.list_workspace_files(data, websocket)
+        elif msg_type == "switch_session":
+            # Client wants to recontext to a different chat session/ensemble
+            new_session_id = (data.get("session_id") or "").strip()
+            if new_session_id:
+                session_key = self._resolve_session_key(websocket, data)
+                self.context.init_session(session_key)
+                found = False
+
+                # Tier 1: Precise lookup by session_id in SQLite
+                if self.memory_enabled and self.memory:
+                    workspace = self.client_workdirs.get(websocket, "")
+                    ens_data = self.memory.load_ensemble_by_session_id(workspace, new_session_id)
+                    if ens_data:
+                        # Hydrate into in-memory session
+                        ens = self.context._dict_to_ensemble(ens_data)
+                        session = self.context._sessions.get(session_key, {})
+                        session.setdefault("ensembles", {})[ens.id] = ens
+                        session["active_id"] = ens.id
+                        print(f"  [CONTEXT] Switched to ensemble via session_id: {ens.title} ({ens.id})")
+                        found = True
+
+                # Tier 2: Fuzzy fallback — search in-memory ensembles
+                if not found:
+                    session = self.context._sessions.get(session_key, {})
+                    ensembles = session.get("ensembles", {})
+                    for eid, ens in ensembles.items():
+                        if ens.session_id == new_session_id:
+                            session["active_id"] = eid
+                            print(f"  [CONTEXT] Switched to ensemble via in-memory match: {ens.title} ({eid})")
+                            found = True
+                            break
+
+                await websocket.send(json.dumps({
+                    "type": "info",
+                    "message": f"Session context {'switched' if found else 'not found, starting fresh'}",
+                }))
+        elif msg_type == "revert_file":
+            # Restore file from snapshot (no git needed)
+            file_path = (data.get("path") or "").strip()
+            snapshot = data.get("snapshot")
+            if file_path and snapshot is not None:
+                try:
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        f.write(snapshot)
+                    print(f"  [REVERT] Restored: {file_path}")
+                    await websocket.send(json.dumps({
+                        "type": "file_reverted",
+                        "path": file_path,
+                        "message": f"Reverted: {os.path.basename(file_path)}",
+                    }))
+                except Exception as e:
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "message": f"Revert failed: {e}",
+                    }))
+            elif file_path and snapshot is None:
+                # Was a new file — delete it
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                    print(f"  [REVERT] Deleted new file: {file_path}")
+                    await websocket.send(json.dumps({
+                        "type": "file_reverted",
+                        "path": file_path,
+                        "message": f"Deleted: {os.path.basename(file_path)}",
+                    }))
+                except Exception as e:
+                    await websocket.send(json.dumps({
+                        "type": "error",
+                        "message": f"Revert failed: {e}",
+                    }))
         else:
             await websocket.send(json.dumps({
                 "type": "error", "message": f"Unknown message type: {msg_type}"
@@ -410,6 +481,16 @@ class ForgeServer:
             context_enabled=bool(context_enabled),
         )
 
+        # Stamp frontend session_id onto the active ensemble for cross-layer mapping
+        frontend_session_id = (data.get("session_id") or "").strip()
+        if frontend_session_id:
+            session_state = self.context._sessions.get(session_key, {})
+            active_id = session_state.get("active_id")
+            active_ens = session_state.get("ensembles", {}).get(active_id)
+            if active_ens and not active_ens.session_id:
+                active_ens.session_id = frontend_session_id
+                print(f"  [CONTEXT] Ensemble {active_ens.id[:8]} stamped with session_id: {frontend_session_id}")
+
         # Phase 0+2: LLM-mediated context resolution + collapse
         collapsed_context = ""
         if has_workspace and self.memory_enabled and self.memory and self.fast_llm:
@@ -444,6 +525,25 @@ class ForgeServer:
         if project_map:
             map_section = f"\n## Project Structure (auto-indexed)\n```\n{project_map}\n```\n"
             collapsed_context = (collapsed_context + map_section) if collapsed_context else map_section
+
+        # Inject active file context from IDE (if provided)
+        active_file = data.get("active_file")
+        if active_file and isinstance(active_file, dict) and active_file.get("path"):
+            af_path = active_file.get("path", "")
+            af_lang = active_file.get("language", "")
+            af_line = active_file.get("cursorLine", 0)
+            af_sel = active_file.get("selection", "")
+            af_surround = active_file.get("surroundingLines", "")
+
+            af_section = f"\n## Active Editor Context\n"
+            af_section += f"File: `{af_path}` ({af_lang})\n"
+            af_section += f"Cursor: line {af_line}\n"
+            if af_sel:
+                af_section += f"Selected text:\n```{af_lang}\n{af_sel}\n```\n"
+            if af_surround:
+                af_section += f"Surrounding code (lines around cursor):\n```{af_lang}\n{af_surround}\n```\n"
+            collapsed_context = (collapsed_context + af_section) if collapsed_context else af_section
+            print(f"  [CONTEXT] Active file: {af_path} (line {af_line}, {af_lang})")
 
         self.current_task = asyncio.create_task(
             self._run_task_background(

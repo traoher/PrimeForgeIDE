@@ -73,14 +73,19 @@ export class ForgeWebSocket {
         }
     }
 
+    // Stable client ID for session continuity across reconnects
+    public clientId: string = '';
+
     send(msg: object): void {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(msg));
+            // Auto-inject client_id into every outgoing message
+            const enriched = { ...msg, client_id: this.clientId };
+            this.ws.send(JSON.stringify(enriched));
         }
     }
 
-    runTask(task: string, workingDir: string, maxIterations: number): void {
-        this.send({ type: 'run_task', task, working_dir: workingDir, max_iterations: maxIterations });
+    runTask(task: string, workingDir: string, maxIterations: number, activeFile?: object, sessionId?: string): void {
+        this.send({ type: 'run_task', task, working_dir: workingDir, max_iterations: maxIterations, active_file: activeFile || null, session_id: sessionId || '' });
     }
 
     stopTask(): void {

@@ -5,6 +5,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'Proton9.chat';
     private view?: vscode.WebviewView;
     private disposables: vscode.Disposable[] = [];
+    // Cache the last active text editor (persists when sidebar gets focus)
+    public static lastActiveEditor: vscode.TextEditor | undefined;
 
     constructor(
         private readonly extensionUri: vscode.Uri,
@@ -28,7 +30,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     const maxIter = vscode.workspace
                         .getConfiguration('Proton9')
                         .get<number>('maxIterations', 50);
-                    this.forge.runTask(msg.task, workDir, maxIter);
+
+                    // Gather active editor context (fall back to cached editor)
+                    const editor = vscode.window.activeTextEditor || SidebarProvider.lastActiveEditor;
+                    let activeFile: {
+                        path: string;
+                        language: string;
+                        cursorLine: number;
+                        selection: string;
+                        surroundingLines: string;
+                    } | undefined;
+
+                    if (editor) {
+                        const doc = editor.document;
+                        const sel = editor.selection;
+                        const selectedText = doc.getText(sel);
+                        // Get ~20 lines around cursor for context
+                        const cursorLine = sel.active.line;
+                        const startLine = Math.max(0, cursorLine - 10);
+                        const endLine = Math.min(doc.lineCount - 1, cursorLine + 10);
+                        const range = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).text.length);
+                        const surroundingLines = doc.getText(range);
+
+                        activeFile = {
+                            path: doc.uri.fsPath,
+                            language: doc.languageId,
+                            cursorLine: cursorLine + 1, // 1-indexed
+                            selection: selectedText || '',
+                            surroundingLines,
+                        };
+                        console.log('[Proton9] Active file context:', activeFile.path, 'line', activeFile.cursorLine);
+                    } else {
+                        console.log('[Proton9] No active editor found (activeTextEditor and cache both undefined)');
+                    }
+
+                    this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId);
                     break;
                 }
                 case 'stop':
@@ -39,6 +75,54 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'query_models':
                     this.forge.queryModels(msg.provider || '');
+                    break;
+                case 'save_chat': {
+                    // Persist chat session to file in .proton9/chats/
+                    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder && msg.sessionId) {
+                        const fs = require('fs');
+                        const path = require('path');
+                        const chatsDir = path.join(wsFolder, '.proton9', 'chats');
+                        try {
+                            fs.mkdirSync(chatsDir, { recursive: true });
+                            const slug = (msg.title || 'chat').replace(/[^a-zA-Z0-9]+/g, '_').slice(0, 40).toLowerCase();
+                            const filename = `${msg.sessionId}_${slug}.json`;
+                            const filepath = path.join(chatsDir, filename);
+                            fs.writeFileSync(filepath, JSON.stringify({
+                                id: msg.sessionId,
+                                title: msg.title || '',
+                                messages: msg.messages || [],
+                                savedAt: new Date().toISOString(),
+                            }, null, 2), 'utf-8');
+                            console.log('[Proton9] Chat saved:', filepath);
+                        } catch (err) {
+                            console.error('[Proton9] Chat save error:', err);
+                        }
+                    }
+                    break;
+                }
+                case 'switch_session':
+                    // Tell server to recontext to a different session/ensemble
+                    this.forge.send({ type: 'switch_session', session_id: msg.sessionId || '' });
+                    break;
+                case 'revert_file':
+                    // Send revert to server with snapshot data
+                    this.forge.send({ type: 'revert_file', path: msg.path || '', snapshot: msg.snapshot });
+                    break;
+                case 'open_file': {
+                    // Open a file in the editor
+                    const uri = vscode.Uri.file(msg.path);
+                    vscode.workspace.openTextDocument(uri).then(doc => {
+                        vscode.window.showTextDocument(doc, { preview: false, preserveFocus: true });
+                    }, () => {});
+                    break;
+                }
+                case 'webview_ready':
+                case 'get_state':
+                    // Webview just loaded — re-send current connection state
+                    if (this.forge.connected) {
+                        try { webview.postMessage({ type: 'connected', version: this.forge.serverVersion || '' }); } catch {}
+                    }
                     break;
             }
         });
@@ -104,6 +188,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .message.system { background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border, #444); font-size:12px; }
         .message.error { background:rgba(244,71,71,0.15); border:1px solid #f44747; color:#f44747; }
         .message.complete { background:rgba(78,201,176,0.15); border:1px solid #4ec9b0; }
+        .message.assistant { background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border, #444); white-space:pre-wrap; font-size:12px; line-height:1.6; max-height:300px; overflow-y:auto; }
+        .diff-card { background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border, #444); border-radius:6px; margin:4px 0; font-size:12px; overflow:hidden; }
+        .diff-card .diff-header { display:flex; align-items:center; justify-content:space-between; padding:6px 10px; background:rgba(78,201,176,0.1); border-bottom:1px solid var(--vscode-widget-border, #333); cursor:pointer; }
+        .diff-card .diff-header .diff-file { font-weight:bold; color:#4ec9b0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .diff-card .diff-header .diff-actions { display:flex; gap:6px; }
+        .diff-card .diff-header .diff-actions button { background:none; border:1px solid var(--vscode-widget-border, #555); color:var(--vscode-foreground); padding:2px 8px; border-radius:3px; font-size:11px; cursor:pointer; }
+        .diff-card .diff-header .diff-actions button:hover { background:rgba(255,255,255,0.1); }
+        .diff-card .diff-header .diff-actions .revert-btn { border-color:#f44747; color:#f44747; }
+        .diff-card .diff-header .diff-actions .revert-btn:hover { background:rgba(244,71,71,0.15); }
+        .diff-card .diff-body { max-height:200px; overflow-y:auto; padding:4px 0; display:none; }
+        .diff-card .diff-body.open { display:block; }
+        .diff-card .diff-line { padding:1px 10px; font-family:var(--vscode-editor-font-family, monospace); font-size:11px; white-space:pre; }
+        .diff-card .diff-line.add { background:rgba(78,201,176,0.15); color:#4ec9b0; }
+        .diff-card .diff-line.del { background:rgba(244,71,71,0.12); color:#f44747; }
+        .diff-card .diff-line.hunk { color:#569cd6; font-style:italic; }
+        .diff-card.reverted { opacity:0.5; }
+        .diff-card.reverted .diff-header { background:rgba(244,71,71,0.1); }
         .message.streaming { border-left:3px solid var(--vscode-button-background); background:var(--vscode-editor-background); }
         .message.streaming .cursor { display:inline-block; width:6px; height:14px; background:var(--vscode-button-background); animation:blink 0.8s infinite; vertical-align:text-bottom; margin-left:2px; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
@@ -135,11 +236,23 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         #send-btn:hover { background:var(--vscode-button-hoverBackground); }
         #stop-btn { background:#f44747; color:white; flex:1; }
         .hidden { display:none !important; }
+        #new-chat-btn { background:transparent; border:1px solid var(--vscode-button-background); color:var(--vscode-button-background); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:4px; min-width:unset; }
+        #new-chat-btn:hover { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
+        #history-btn { background:transparent; border:1px solid var(--vscode-widget-border, #444); color:var(--vscode-foreground); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:2px; min-width:unset; }
+        #history-btn:hover { background:var(--vscode-list-hoverBackground, #2a2d2e); }
+        #history-panel { display:none; position:absolute; top:36px; left:8px; right:8px; background:var(--vscode-editorWidget-background, #252526); border:1px solid var(--vscode-widget-border, #444); border-radius:4px; z-index:100; max-height:200px; overflow-y:auto; box-shadow:0 4px 12px rgba(0,0,0,0.4); }
+        #history-panel.open { display:block; }
+        .history-item { padding:6px 10px; cursor:pointer; font-size:12px; border-bottom:1px solid var(--vscode-widget-border, #333); display:flex; justify-content:space-between; }
+        .history-item:hover { background:var(--vscode-list-hoverBackground, #2a2d2e); }
+        .history-item.active { background:var(--vscode-list-activeSelectionBackground, #094771); color:var(--vscode-list-activeSelectionForeground, #fff); }
+        .history-item .title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .history-item .count { font-size:10px; opacity:0.6; margin-left:8px; white-space:nowrap; }
     </style>
 </head>
 <body>
     <div id="app">
-        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Connected (v' + initialVersion + ')' : 'Connecting...'}</span><span id="model-label"></span><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="history-panel"></div>
         <div id="settings-panel">
             <div class="settings-row">
                 <label for="provider-select">Provider</label>
@@ -177,12 +290,120 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             const saveModelBtn = document.getElementById('save-model-btn');
             let isRunning = false;
             let streamingEl = null;
+
+            // Sync state on load — request current state from extension host
+            vscode.postMessage({ type: 'webview_ready' });
             let currentFeedEl = null;      // current Action Feed wrapper
             let currentFeedBody = null;    // its body (contains steps)
             let currentPrompt = '';        // current task prompt
             let currentAnswer = '';        // task answer/summary
             let stepCount = 0;
             let cachedModels = [];         // [{id, context_window}, ...]
+            let streamBuffer = '';          // accumulate LLM tokens for saving
+
+            // ─── Multi-session chat history ───
+            var sessions = [];             // [{id, title, messages: [{type, text, ts}]}]
+            var activeSessionId = '';
+
+            function generateSessionId() { return 's-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,6); }
+
+            function deriveTitle(messages) {
+                var first = messages.find(function(m) { return m.type === 'user'; });
+                if (!first) return 'New Chat';
+                var t = first.text.slice(0, 40);
+                return t.length < first.text.length ? t + '...' : t;
+            }
+
+            function saveState() {
+                // Update active session's messages and title
+                var active = sessions.find(function(s) { return s.id === activeSessionId; });
+                if (active) {
+                    active.messages = chatMessages;
+                    active.title = deriveTitle(chatMessages);
+                }
+                vscode.setState({ sessions: sessions, activeSessionId: activeSessionId });
+            }
+
+            function loadSession(sessionId) {
+                var session = sessions.find(function(s) { return s.id === sessionId; });
+                if (!session) return;
+                activeSessionId = sessionId;
+                chatMessages = session.messages || [];
+                messagesEl.innerHTML = '';
+                chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
+                currentPrompt = '';
+                currentAnswer = '';
+                stepCount = 0;
+                streamBuffer = '';
+                currentFeedEl = null;
+                currentFeedBody = null;
+                saveState();
+                renderHistory();
+                // Tell server to recontext to this session's ensemble
+                vscode.postMessage({ type: 'switch_session', sessionId: sessionId });
+            }
+
+            function createNewSession() {
+                // Save current session first
+                var active = sessions.find(function(s) { return s.id === activeSessionId; });
+                if (active) {
+                    active.messages = chatMessages;
+                    active.title = deriveTitle(chatMessages);
+                }
+                // Create new
+                var newId = generateSessionId();
+                sessions.unshift({ id: newId, title: 'New Chat', messages: [] });
+                activeSessionId = newId;
+                chatMessages = [];
+                messagesEl.innerHTML = '';
+                currentPrompt = '';
+                currentAnswer = '';
+                stepCount = 0;
+                streamBuffer = '';
+                currentFeedEl = null;
+                currentFeedBody = null;
+                // Keep max 20 sessions
+                if (sessions.length > 20) sessions = sessions.slice(0, 20);
+                saveState();
+                renderHistory();
+                vscode.postMessage({ type: 'run_task', task: '/clear' });
+            }
+
+            function renderHistory() {
+                var panel = document.getElementById('history-panel');
+                if (!panel) return;
+                panel.innerHTML = '';
+                sessions.forEach(function(s) {
+                    var el = document.createElement('div');
+                    el.className = 'history-item' + (s.id === activeSessionId ? ' active' : '');
+                    var count = s.messages ? s.messages.filter(function(m) { return m.type === 'user'; }).length : 0;
+                    el.innerHTML = '<span class="title">' + esc(s.title) + '</span><span class="count">' + count + ' msg</span>';
+                    el.addEventListener('click', function() {
+                        loadSession(s.id);
+                        panel.classList.remove('open');
+                    });
+                    panel.appendChild(el);
+                });
+            }
+
+            // Restore saved sessions on load
+            var savedState = vscode.getState();
+            if (savedState && savedState.sessions && savedState.sessions.length) {
+                sessions = savedState.sessions;
+                activeSessionId = savedState.activeSessionId || sessions[0].id;
+                var activeSession = sessions.find(function(s) { return s.id === activeSessionId; });
+                if (activeSession) {
+                    chatMessages = activeSession.messages || [];
+                    chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
+                }
+            } else {
+                // First time: create initial session
+                activeSessionId = generateSessionId();
+                sessions = [{ id: activeSessionId, title: 'New Chat', messages: [] }];
+                chatMessages = [];
+                saveState();
+            }
+            renderHistory();
 
             function populateModels(models, currentModel) {
                 if (!modelSelect) return;
@@ -210,6 +431,25 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     extra.selected = true;
                     modelSelect.insertBefore(extra, modelSelect.firstChild);
                 }
+            }
+
+            // ─── New Chat ───
+            var newChatBtn = document.getElementById('new-chat-btn');
+            if (newChatBtn) {
+                newChatBtn.addEventListener('click', function() {
+                    createNewSession();
+                    addMessage('New chat started', 'system');
+                });
+            }
+
+            // ─── History toggle ───
+            var historyBtn = document.getElementById('history-btn');
+            var historyPanel = document.getElementById('history-panel');
+            if (historyBtn && historyPanel) {
+                historyBtn.addEventListener('click', function() {
+                    renderHistory();
+                    historyPanel.classList.toggle('open');
+                });
             }
 
             // ─── Settings Panel ───
@@ -247,9 +487,10 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 currentPrompt = task;
                 currentAnswer = '';
                 stepCount = 0;
+                streamBuffer = '';
                 addMessage(task, 'user');
                 inputEl.value = '';
-                vscode.postMessage({ type: 'run_task', task: task });
+                vscode.postMessage({ type: 'run_task', task: task, sessionId: activeSessionId });
             }
 
             sendBtn.addEventListener('click', sendTask);
@@ -264,7 +505,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 if (!msg || !msg.type) return;
                 switch (msg.type) {
                     case 'connected':
-                        setStatus('connected', 'Connected (v' + (msg.version || '?') + ')');
+                        setStatus('connected', 'Ready');
                         var cProv = msg.llm_provider || '';
                         var cModel = msg.llm_model || '';
                         if (cProv && providerSelect) { providerSelect.value = cProv; }
@@ -276,9 +517,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     case 'task_started': setRunning(true); setStatus('running', 'Running...'); createActionFeed(); break;
                     case 'action': endStreaming(); addAction(msg.step, msg.tool, msg.args); break;
                     case 'result': updateLastAction(msg.success, msg.output, msg.error); break;
-                    case 'llm_token': appendStream(msg.text || ''); break;
-                    case 'task_complete': endStreaming(); setRunning(false); setStatus('connected', 'Done'); finalizeActionFeed(msg.result || {}); addCompletionCard(msg.result || {}); break;
-                    case 'task_error': endStreaming(); setRunning(false); setStatus('connected', 'Error'); addMessage('Error: ' + (msg.error || 'Unknown'), 'error'); break;
+                    case 'llm_token': appendStream(msg.text || ''); streamBuffer += (msg.text || ''); break;
+                    case 'task_complete':
+                        endStreaming();
+                        setRunning(false);
+                        setStatus('connected', 'Ready');
+                        finalizeActionFeed(msg.result || {});
+                        // Save the full agent response as a message
+                        var summary = (msg.result || {}).summary || '';
+                        var responseText = streamBuffer || summary || '(no response)';
+                        addMessage(responseText, 'assistant');
+                        streamBuffer = '';
+                        addCompletionCard(msg.result || {});
+                        // Persist full session to file
+                        vscode.postMessage({ type: 'save_chat', sessionId: activeSessionId, title: deriveTitle(chatMessages), messages: chatMessages });
+                        break;
+                    case 'task_error': endStreaming(); setRunning(false); setStatus('connected', 'Ready'); addMessage('Error: ' + (msg.error || 'Unknown'), 'error'); streamBuffer = ''; break;
                     case 'error': addMessage('Server: ' + (msg.message || msg.error || 'Unknown error'), 'error'); break;
                     case 'model_changed':
                         var mProv = msg.provider || '';
@@ -295,13 +549,107 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                             populateModels(msg.models || [], curVal);
                         }
                         break;
+                    case 'file_changed':
+                        addFileChangeCard(msg.path, msg.diff, msg.tool, msg.snapshot, msg.is_new);
+                        // Also open the file in the editor
+                        vscode.postMessage({ type: 'open_file', path: msg.path });
+                        break;
+                    case 'file_reverted':
+                        // Mark the diff card as reverted
+                        var cards = document.querySelectorAll('.diff-card[data-path="' + (msg.path || '') + '"]');
+                        cards.forEach(function(c) { c.classList.add('reverted'); });
+                        addMessage('↩ ' + (msg.message || 'File reverted'), 'system');
+                        // Re-open the reverted file to refresh editor
+                        vscode.postMessage({ type: 'open_file', path: msg.path });
+                        break;
                 }
             });
 
             function setStatus(state, text) { statusDot.className = 'dot ' + state; statusText.textContent = text; }
             function setRunning(running) { isRunning = running; sendBtn.classList.toggle('hidden', running); stopBtn.classList.toggle('hidden', !running); inputEl.disabled = running; }
-            function addMessage(text, type) { var el = document.createElement('div'); el.className = 'message ' + type; el.textContent = text; messagesEl.appendChild(el); scrollToBottom(); }
 
+            // Diff Card for File Changes
+            var fileSnapshots = {};
+
+            function addFileChangeCard(filePath, diff, tool, snapshot, isNew) {
+                if (filePath) fileSnapshots[filePath] = snapshot;
+                var card = document.createElement('div');
+                card.className = 'diff-card';
+                card.setAttribute('data-path', filePath || '');
+                var basename = (filePath || '').replace(/.*[\\/\\\\]/, '') || 'unknown';
+                var toolLabel = isNew ? 'new file' : (tool === 'file_write' ? 'created' : 'edited');
+                var header = document.createElement('div');
+                header.className = 'diff-header';
+                var fileSpan = document.createElement('span');
+                fileSpan.className = 'diff-file';
+                fileSpan.textContent = basename + ' (' + toolLabel + ')';
+                var actionsDiv = document.createElement('div');
+                actionsDiv.className = 'diff-actions';
+                var toggleBtn = document.createElement('button');
+                toggleBtn.className = 'toggle-btn';
+                toggleBtn.title = 'Toggle diff';
+                toggleBtn.textContent = '>';
+                var revertBtn = document.createElement('button');
+                revertBtn.className = 'revert-btn';
+                revertBtn.title = 'Revert to original';
+                revertBtn.textContent = 'Revert';
+                actionsDiv.appendChild(toggleBtn);
+                actionsDiv.appendChild(revertBtn);
+                header.appendChild(fileSpan);
+                header.appendChild(actionsDiv);
+                var body = document.createElement('div');
+                body.className = 'diff-body';
+                if (diff) {
+                    var dlines = diff.split('\\n');
+                    for (var i = 0; i < dlines.length; i++) {
+                        var ln = document.createElement('div');
+                        ln.className = 'diff-line';
+                        var dl = dlines[i];
+                        if (dl.charAt(0) === '+' && dl.substring(0,3) !== '+++') { ln.className += ' add'; }
+                        else if (dl.charAt(0) === '-' && dl.substring(0,3) !== '---') { ln.className += ' del'; }
+                        else if (dl.substring(0,2) === '@@') { ln.className += ' hunk'; }
+                        ln.textContent = dl;
+                        body.appendChild(ln);
+                    }
+                } else {
+                    var nd = document.createElement('div');
+                    nd.className = 'diff-line';
+                    nd.style.opacity = '0.5';
+                    nd.textContent = 'No diff available';
+                    body.appendChild(nd);
+                }
+                card.appendChild(header);
+                card.appendChild(body);
+                messagesEl.appendChild(card);
+                scrollToBottom();
+                toggleBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    body.classList.toggle('open');
+                    toggleBtn.textContent = body.classList.contains('open') ? 'v' : '>';
+                });
+                header.addEventListener('click', function() {
+                    body.classList.toggle('open');
+                    toggleBtn.textContent = body.classList.contains('open') ? 'v' : '>';
+                });
+                revertBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var snap = fileSnapshots[filePath];
+                    vscode.postMessage({ type: 'revert_file', path: filePath, snapshot: snap === undefined ? null : snap });
+                });
+            }
+            function addMessage(text, type, skipSave) {
+                var el = document.createElement('div');
+                el.className = 'message ' + type;
+                el.textContent = text;
+                messagesEl.appendChild(el);
+                scrollToBottom();
+                if (!skipSave && (type === 'user' || type === 'complete' || type === 'error' || type === 'assistant')) {
+                    chatMessages.push({ type: type, text: text, ts: Date.now() });
+                    if (chatMessages.length > 100) chatMessages = chatMessages.slice(-100);
+                    saveState();
+                }
+            }
+            var chatMessages = [];
             // ─── Action Feed ───
             function createActionFeed() {
                 currentFeedEl = document.createElement('div');

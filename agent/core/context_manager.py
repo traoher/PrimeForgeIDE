@@ -76,6 +76,7 @@ class Ensemble:
     last_assistant_summary: str = ""
     turns: list[dict[str, Any]] = field(default_factory=list)
     last_active_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    session_id: str = ""  # Frontend chat session ID for cross-layer mapping
 
 
 class ContextManager:
@@ -374,6 +375,7 @@ class ContextManager:
             "last_user_prompt": ens.last_user_prompt,
             "last_assistant_summary": ens.last_assistant_summary,
             "last_active_at": ens.last_active_at,
+            "session_id": ens.session_id,
         }
 
     def _dict_to_ensemble(self, data: dict) -> Ensemble:
@@ -402,6 +404,7 @@ class ContextManager:
             last_assistant_summary=data.get("last_assistant_summary", ""),
             turns=data.get("turns", []),
             last_active_at=data.get("last_active_at", ""),
+            session_id=data.get("session_id", ""),
         )
 
     def _persist_ensemble(self, ens: Ensemble, is_active: bool = False):

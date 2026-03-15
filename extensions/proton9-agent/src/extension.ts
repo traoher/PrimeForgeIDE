@@ -69,6 +69,15 @@ export function activate(context: vscode.ExtensionContext): void {
             vscode.workspace.getConfiguration('Proton9').get<string>('serverUrl', 'ws://localhost:9321')
         );
 
+        // Stable client ID for session continuity (persists across restarts)
+        let clientId = context.globalState.get<string>('proton9.clientId');
+        if (!clientId) {
+            clientId = 'p9-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+            context.globalState.update('proton9.clientId', clientId);
+        }
+        forge.clientId = clientId;
+        console.log('[Proton9] Client ID:', clientId);
+
         // Token buffering for Output channel (avoids word-per-line noise)
         let tokenBuffer = '';
         let tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -137,6 +146,16 @@ export function activate(context: vscode.ExtensionContext): void {
         );
 
         sidebarProvider = new SidebarProvider(context.extensionUri, forge);
+
+        // Track active text editor so sidebar can reference it even when webview has focus
+        SidebarProvider.lastActiveEditor = vscode.window.activeTextEditor;
+        context.subscriptions.push(
+            vscode.window.onDidChangeActiveTextEditor((editor) => {
+                if (editor) {
+                    SidebarProvider.lastActiveEditor = editor;
+                }
+            })
+        );
 
         context.subscriptions.push(
             vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider, {

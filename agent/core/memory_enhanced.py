@@ -108,9 +108,16 @@ class EnhancedMemory(QuantumMemory):
                 last_user_prompt TEXT,
                 last_assistant_summary TEXT,
                 last_active_at TEXT,
-                is_active BOOLEAN DEFAULT 0
+                is_active BOOLEAN DEFAULT 0,
+                session_id TEXT
             )
         """)
+
+        # Auto-migrate: add session_id to existing Ensembles tables
+        try:
+            cursor.execute("ALTER TABLE Ensembles ADD COLUMN session_id TEXT")
+        except Exception:
+            pass  # Column already exists
 
         # FTS5 virtual tables for semantic search
         try:
@@ -374,8 +381,8 @@ class EnhancedMemory(QuantumMemory):
                 id, workspace_path, title, objective, completed,
                 in_progress, blockers, methods, turns,
                 last_user_prompt, last_assistant_summary,
-                last_active_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_active_at, is_active, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title=excluded.title,
                 objective=excluded.objective,
@@ -387,7 +394,8 @@ class EnhancedMemory(QuantumMemory):
                 last_user_prompt=excluded.last_user_prompt,
                 last_assistant_summary=excluded.last_assistant_summary,
                 last_active_at=excluded.last_active_at,
-                is_active=excluded.is_active
+                is_active=excluded.is_active,
+                session_id=excluded.session_id
         """, (
             ensemble_data.get("id", ""),
             workspace_path,
@@ -402,6 +410,7 @@ class EnhancedMemory(QuantumMemory):
             ensemble_data.get("last_assistant_summary", ""),
             ensemble_data.get("last_active_at", now),
             ensemble_data.get("is_active", False),
+            ensemble_data.get("session_id", ""),
         ))
         conn.commit()
         conn.close()
@@ -447,6 +456,37 @@ class EnhancedMemory(QuantumMemory):
                 "is_active": bool(row[11]),
             })
         return ensembles
+
+    def load_ensemble_by_session_id(self, workspace_path: str, session_id: str) -> dict | None:
+        """Lookup an ensemble by its frontend chat session ID."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, objective, completed, in_progress, blockers,
+                   methods, turns, last_user_prompt, last_assistant_summary,
+                   last_active_at, is_active
+            FROM Ensembles
+            WHERE workspace_path = ? AND session_id = ?
+            ORDER BY last_active_at DESC LIMIT 1
+        """, (workspace_path, session_id))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "title": row[1],
+            "objective": row[2],
+            "completed": json.loads(row[3] or "[]"),
+            "in_progress": row[4],
+            "blockers": json.loads(row[5] or "[]"),
+            "methods": json.loads(row[6] or "[]"),
+            "turns": json.loads(row[7] or "[]"),
+            "last_user_prompt": row[8],
+            "last_assistant_summary": row[9],
+            "last_active_at": row[10],
+            "is_active": bool(row[11]),
+        }
 
     # ── Tier 2: Project Manifest ──────────────────────────────────
 

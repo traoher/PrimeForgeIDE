@@ -795,6 +795,22 @@ class Agent(PlannerMixin, RemediationMixin):
                     except Exception:
                         pass
 
+                    # Emit file_changed event for IDE inline editing + revert
+                    if edited_path and result.success:
+                        try:
+                            abs_edited = os.path.abspath(edited_path)
+                            diff = self.log.get_diff(edited_path)
+                            snapshot = self.log.file_snapshots.get(abs_edited)
+                            self._event_callback("file_changed", {
+                                "path": abs_edited,
+                                "diff": (diff or "")[:5000],
+                                "snapshot": snapshot[:10000] if snapshot else None,
+                                "tool": tool_name,
+                                "is_new": snapshot is None,
+                            })
+                        except Exception:
+                            pass
+
                 # Check for done signal
                 if tool_name == "done":
                     task_complete = True
