@@ -84,8 +84,8 @@ export class ForgeWebSocket {
         }
     }
 
-    runTask(task: string, workingDir: string, maxIterations: number, activeFile?: object, sessionId?: string): void {
-        this.send({ type: 'run_task', task, working_dir: workingDir, max_iterations: maxIterations, active_file: activeFile || null, session_id: sessionId || '' });
+    runTask(task: string, workingDir: string, maxIterations: number, activeFile?: object, sessionId?: string, diagnostics?: object[], mentionedFiles?: object[]): void {
+        this.send({ type: 'run_task', task, working_dir: workingDir, max_iterations: maxIterations, active_file: activeFile || null, session_id: sessionId || '', diagnostics: diagnostics || [], mentioned_files: mentionedFiles || [] });
     }
 
     stopTask(): void {

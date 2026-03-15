@@ -545,6 +545,37 @@ class ForgeServer:
             collapsed_context = (collapsed_context + af_section) if collapsed_context else af_section
             print(f"  [CONTEXT] Active file: {af_path} (line {af_line}, {af_lang})")
 
+        # Inject IDE diagnostics (lint errors, warnings) into context
+        diagnostics = data.get("diagnostics") or []
+        if diagnostics and isinstance(diagnostics, list):
+            diag_lines = []
+            for d in diagnostics[:30]:
+                sev = d.get("severity", "error")
+                path = d.get("path", "")
+                line = d.get("line", 0)
+                msg = d.get("message", "")
+                src = d.get("source", "")
+                diag_lines.append(f"  [{sev.upper()}] {path}:{line} — {msg}" + (f" ({src})" if src else ""))
+            if diag_lines:
+                diag_section = "\n## IDE Diagnostics\n"
+                diag_section += "The following errors/warnings are reported by the IDE:\n"
+                diag_section += "\n".join(diag_lines) + "\n"
+                collapsed_context = (collapsed_context + diag_section) if collapsed_context else diag_section
+                print(f"  [CONTEXT] Diagnostics: {len(diag_lines)} issues injected")
+
+        # Inject @mentioned file contents into context
+        mentioned_files = data.get("mentioned_files") or []
+        if mentioned_files and isinstance(mentioned_files, list):
+            mention_section = "\n## Referenced Files (@mentions)\n"
+            for mf in mentioned_files[:5]:
+                mf_path = mf.get("path", "")
+                mf_content = mf.get("content", "")
+                if mf_path and mf_content:
+                    ext = mf_path.rsplit(".", 1)[-1] if "." in mf_path else ""
+                    mention_section += f"\n### `{mf_path}`\n```{ext}\n{mf_content}\n```\n"
+            collapsed_context = (collapsed_context + mention_section) if collapsed_context else mention_section
+            print(f"  [CONTEXT] @mentions: {len(mentioned_files)} files injected")
+
         self.current_task = asyncio.create_task(
             self._run_task_background(
                 websocket=websocket,
@@ -846,6 +877,16 @@ class ForgeServer:
         # Inject collapsed context into agent (for system prompt enrichment)
         agent._collapsed_context = collapsed_context
 
+        # Connect to MCP servers (if configured) and register their tools
+        mcp_clients = []
+        try:
+            from tools.mcp_client import connect_mcp_servers
+            mcp_clients, mcp_tools = connect_mcp_servers(working_dir)
+            for tool in mcp_tools:
+                agent.tools.register(tool)
+        except Exception as e:
+            print(f"  [MCP] Error loading MCP servers: {e}")
+
         # Monkey-patch the agent's print methods to also broadcast events
         original_print_action = agent._print_action
         original_print_result = agent._print_result
@@ -887,6 +928,12 @@ class ForgeServer:
             return agent.run(task, event_callback=stream_event, raw_task=raw_task)
         finally:
             self.agent = None
+            # Disconnect MCP servers
+            for client in mcp_clients:
+                try:
+                    client.stop()
+                except Exception:
+                    pass
             self.stop_requested = False
 
     async def stop_task(self, websocket):

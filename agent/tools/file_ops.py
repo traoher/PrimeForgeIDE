@@ -392,3 +392,19 @@ class DoneTool(BaseTool):
     def execute(self, summary: str, **kwargs) -> ToolResult:
         return ToolResult(success=True, output=f"TASK COMPLETE: {summary}")
 
+
+class PlanTool(BaseTool):
+    name = "plan"
+    description = "Create a structured artifact (implementation plan, walkthrough, analysis, or report) that will be displayed in the IDE sidebar as an expandable card. Use this when the user asks you to plan, analyze, or document something."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Short title for the artifact (e.g., 'Implementation Plan', 'Refactoring Walkthrough')"},
+            "content": {"type": "string", "description": "Markdown content of the artifact. Use headers, lists, code blocks as needed."},
+            "artifact_type": {"type": "string", "enum": ["plan", "walkthrough", "analysis", "report"], "description": "Type of artifact"},
+        },
+        "required": ["title", "content"],
+    }
+
+    def execute(self, title: str, content: str, artifact_type: str = "plan", **kwargs) -> ToolResult:
+        return ToolResult(success=True, output=f"Artifact created: {title}")

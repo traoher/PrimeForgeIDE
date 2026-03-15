@@ -21,7 +21,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         console.log('[Proton9] resolveWebviewView called, forge.connected:', this.forge.connected);
 
         // Register message handler ONCE (survives html re-sets)
-        webview.onDidReceiveMessage((msg) => {
+        webview.onDidReceiveMessage(async (msg) => {
             console.log('[Proton9] Webview message received:', msg.type);
             switch (msg.type) {
                 case 'run_task': {
@@ -64,7 +64,65 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         console.log('[Proton9] No active editor found (activeTextEditor and cache both undefined)');
                     }
 
-                    this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId);
+                    // Collect diagnostics (lint errors, warnings) for context
+                    let diagnostics: { path: string; line: number; severity: string; message: string; source: string }[] = [];
+                    try {
+                        const allDiags = vscode.languages.getDiagnostics();
+                        for (const [uri, diags] of allDiags) {
+                            for (const d of diags) {
+                                if (d.severity <= vscode.DiagnosticSeverity.Warning) {
+                                    diagnostics.push({
+                                        path: uri.fsPath,
+                                        line: d.range.start.line + 1,
+                                        severity: d.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning',
+                                        message: d.message,
+                                        source: d.source || '',
+                                    });
+                                }
+                            }
+                        }
+                        // Cap at 30 diagnostics to avoid bloating the prompt
+                        if (diagnostics.length > 30) diagnostics = diagnostics.slice(0, 30);
+                        if (diagnostics.length > 0) {
+                            console.log(`[Proton9] Sending ${diagnostics.length} diagnostics with task`);
+                        }
+                    } catch { /* ignore diagnostics errors */ }
+
+                    // Parse @mentions from task text — resolve files and inject contents
+                    let mentionedFiles: { path: string; content: string }[] = [];
+                    try {
+                        const mentionPattern = /@([\w\-./\\]+\.\w+)/g;
+                        let match;
+                        while ((match = mentionPattern.exec(msg.task)) !== null) {
+                            const ref = match[1];
+                            // Resolve relative to workspace
+                            const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+                            const candidates = [
+                                vscode.Uri.file(ref),
+                                vscode.Uri.file(require('path').join(wsRoot, ref)),
+                            ];
+                            for (const uri of candidates) {
+                                try {
+                                    const stat = await vscode.workspace.fs.stat(uri);
+                                    if (stat.type === vscode.FileType.File) {
+                                        const bytes = await vscode.workspace.fs.readFile(uri);
+                                        const text = Buffer.from(bytes).toString('utf8');
+                                        mentionedFiles.push({
+                                            path: uri.fsPath,
+                                            content: text.substring(0, 5000),
+                                        });
+                                        break;
+                                    }
+                                } catch { /* file not found, try next candidate */ }
+                            }
+                            if (mentionedFiles.length >= 5) break; // cap at 5 files
+                        }
+                        if (mentionedFiles.length > 0) {
+                            console.log(`[Proton9] @mentions: resolved ${mentionedFiles.length} files`);
+                        }
+                    } catch { /* ignore mention errors */ }
+
+                    this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId, diagnostics.length > 0 ? diagnostics : undefined, mentionedFiles.length > 0 ? mentionedFiles : undefined);
                     break;
                 }
                 case 'stop':
@@ -205,6 +263,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .diff-card .diff-line.hunk { color:#569cd6; font-style:italic; }
         .diff-card.reverted { opacity:0.5; }
         .diff-card.reverted .diff-header { background:rgba(244,71,71,0.1); }
+        .artifact-card { background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border, #444); border-radius:6px; margin:4px 0; font-size:12px; overflow:hidden; }
+        .artifact-card .artifact-header { display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:rgba(180,120,255,0.1); border-bottom:1px solid var(--vscode-widget-border, #333); cursor:pointer; }
+        .artifact-card .artifact-title { font-weight:bold; color:#c586c0; flex:1; }
+        .artifact-card .artifact-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:rgba(180,120,255,0.2); color:#c586c0; margin-right:8px; }
+        .artifact-card .artifact-body { max-height:400px; overflow-y:auto; padding:8px 12px; display:none; white-space:pre-wrap; font-size:11px; line-height:1.5; color:var(--vscode-foreground); }
+        .artifact-card .artifact-body.open { display:block; }
+        .artifact-card .artifact-actions button { background:none; border:1px solid var(--vscode-widget-border, #555); color:var(--vscode-foreground); padding:2px 8px; border-radius:3px; font-size:11px; cursor:pointer; }
+        .artifact-card .artifact-actions button:hover { background:rgba(255,255,255,0.1); }
         .message.streaming { border-left:3px solid var(--vscode-button-background); background:var(--vscode-editor-background); }
         .message.streaming .cursor { display:inline-block; width:6px; height:14px; background:var(--vscode-button-background); animation:blink 0.8s infinite; vertical-align:text-bottom; margin-left:2px; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
@@ -562,6 +628,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         // Re-open the reverted file to refresh editor
                         vscode.postMessage({ type: 'open_file', path: msg.path });
                         break;
+                    case 'task_artifact':
+                        addArtifactCard(msg.title, msg.content, msg.artifact_type);
+                        break;
                 }
             });
 
@@ -570,6 +639,55 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
             // Diff Card for File Changes
             var fileSnapshots = {};
+
+            function addArtifactCard(title, content, artifactType) {
+                var card = document.createElement('div');
+                card.className = 'artifact-card';
+                var header = document.createElement('div');
+                header.className = 'artifact-header';
+                var badge = document.createElement('span');
+                badge.className = 'artifact-badge';
+                badge.textContent = (artifactType || 'plan').toUpperCase();
+                var titleSpan = document.createElement('span');
+                titleSpan.className = 'artifact-title';
+                titleSpan.textContent = title || 'Artifact';
+                var actions = document.createElement('div');
+                actions.className = 'artifact-actions';
+                var toggleBtn = document.createElement('button');
+                toggleBtn.textContent = '>';
+                toggleBtn.title = 'Toggle content';
+                var copyBtn = document.createElement('button');
+                copyBtn.textContent = 'Copy';
+                copyBtn.title = 'Copy content';
+                actions.appendChild(toggleBtn);
+                actions.appendChild(copyBtn);
+                header.appendChild(badge);
+                header.appendChild(titleSpan);
+                header.appendChild(actions);
+                var body = document.createElement('div');
+                body.className = 'artifact-body';
+                body.textContent = content || '';
+                card.appendChild(header);
+                card.appendChild(body);
+                messagesEl.appendChild(card);
+                scrollToBottom();
+                toggleBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    body.classList.toggle('open');
+                    toggleBtn.textContent = body.classList.contains('open') ? 'v' : '>';
+                });
+                header.addEventListener('click', function() {
+                    body.classList.toggle('open');
+                    toggleBtn.textContent = body.classList.contains('open') ? 'v' : '>';
+                });
+                copyBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    navigator.clipboard.writeText(content || '').then(function() {
+                        copyBtn.textContent = 'Copied!';
+                        setTimeout(function() { copyBtn.textContent = 'Copy'; }, 1500);
+                    });
+                });
+            }
 
             function addFileChangeCard(filePath, diff, tool, snapshot, isNew) {
                 if (filePath) fileSnapshots[filePath] = snapshot;

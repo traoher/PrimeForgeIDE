@@ -24,7 +24,7 @@ from core.llm_gateway import LLMGateway
 from core.safety import SafetyRails, SafetyError
 from core.prompts import SYSTEM_PROMPT, TOOL_RESULT_TEMPLATE, COMPLEXITY_GATE_PROMPT, PLANNER_PROMPT
 from tools.base import ToolRegistry, ToolResult
-from tools.file_ops import FileReadTool, FileWriteTool, FileMultiReplaceTool, FileSearchTool, FileListTool, DoneTool, BatchReadTool
+from tools.file_ops import FileReadTool, FileWriteTool, FileMultiReplaceTool, FileSearchTool, FileListTool, DoneTool, BatchReadTool, PlanTool
 from tools.code_search import CodeSearchTool
 from tools.shell import ShellExecTool
 from tools.test_runner import TestRunTool
@@ -33,6 +33,8 @@ from tools.video import VideoAnalyzeTool
 from tools.video_fetch import VideoFetchTool
 from tools.browser import BrowserOpenTool, BrowserClickTool, BrowserFillTool, BrowserScreenshotTool
 from tools.web_tools import WebSearchTool, WebReadTool
+from tools.image_gen import ImageGenerateTool
+from tools.semantic_search import SemanticSearchTool
 from core.memory import QuantumMemory
 try:
     from core.memory_enhanced import EnhancedMemory
@@ -322,6 +324,9 @@ class Agent(PlannerMixin, RemediationMixin):
         self.tools.register(BrowserScreenshotTool(browser_open_tool=browser_open))
 
         self.tools.register(DoneTool())
+        self.tools.register(PlanTool())
+        self.tools.register(ImageGenerateTool())
+        self.tools.register(SemanticSearchTool())
 
         # Load dynamic plugins (opt-in; defaults to off for safety)
         if self.plugins_auto_load:
@@ -807,6 +812,17 @@ class Agent(PlannerMixin, RemediationMixin):
                                 "snapshot": snapshot[:10000] if snapshot else None,
                                 "tool": tool_name,
                                 "is_new": snapshot is None,
+                            })
+                        except Exception:
+                            pass
+
+                    # Emit task_artifact event for plan/walkthrough/analysis tools
+                    if tool_name == "plan" and result.success:
+                        try:
+                            self._event_callback("task_artifact", {
+                                "title": tool_args.get("title", "Artifact"),
+                                "content": tool_args.get("content", ""),
+                                "artifact_type": tool_args.get("artifact_type", "plan"),
                             })
                         except Exception:
                             pass
