@@ -1,0 +1,80 @@
+{
+    "name": "proton9-agent",
+    "displayName": "Proton9 Agent",
+    "description": "AI coding agent — autonomous task execution, file editing, and shell commands",
+    "version": "0.3.0",
+    "engines": {
+        "vscode": "*"
+    },
+    "categories": [
+        "Other"
+    ],
+    "activationEvents": [
+        "*"
+    ],
+    "main": "./out/extension",
+    "contributes": {
+        "viewsContainers": {
+            "activitybar": [
+                {
+                    "id": "Proton9",
+                    "title": "Proton9",
+                    "icon": "media/icon.svg"
+                }
+            ]
+        },
+        "views": {
+            "Proton9": [
+                {
+                    "type": "webview",
+                    "id": "Proton9.chat",
+                    "name": "Proton9"
+                }
+            ]
+        },
+        "commands": [
+            {
+                "command": "Proton9.sendTask",
+                "title": "Proton9: Run Task"
+            },
+            {
+                "command": "Proton9.stop",
+                "title": "Proton9: Stop Task"
+            },
+            {
+                "command": "Proton9.reconnect",
+                "title": "Proton9: Reconnect"
+            }
+        ],
+        "configuration": {
+            "title": "Proton9",
+            "properties": {
+                "Proton9.serverUrl": {
+                    "type": "string",
+                    "default": "ws://localhost:9321",
+                    "description": "Proton9 WebSocket server URL"
+                },
+                "Proton9.maxIterations": {
+                    "type": "number",
+                    "default": 50,
+                    "description": "Maximum agent iterations per task"
+                }
+            }
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run build",
+        "build": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --minify",
+        "watch": "esbuild src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --watch"
+    },
+    "devDependencies": {
+        "@types/node": "^20.0.0",
+        "@types/vscode": "^1.85.0",
+        "@types/ws": "^8.5.0",
+        "esbuild": "^0.27.3",
+        "typescript": "^5.3.0"
+    },
+    "dependencies": {
+        "ws": "^8.16.0"
+    }
+}
