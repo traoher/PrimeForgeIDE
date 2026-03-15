@@ -91,6 +91,14 @@ export class ForgeWebSocket {
         this.send({ type: 'set_workspace', path });
     }
 
+    setModel(provider: string, model: string): void {
+        this.send({ type: 'set_model', provider, model });
+    }
+
+    queryModels(provider: string): void {
+        this.send({ type: 'query_models', provider });
+    }
+
     dispose(): void {
         this.cleanup();
         if (this.reconnectTimer) {

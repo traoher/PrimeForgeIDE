@@ -21,3 +21,7 @@ vscode.db
 product.overrides.json
 *.snap.actual
 .vscode-test
+
+# Proton9 agent secrets
+agent/.env
+

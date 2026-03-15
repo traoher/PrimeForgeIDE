@@ -1,11 +1,62 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { spawn, ChildProcess } from 'child_process';
 import { ForgeWebSocket } from './websocket';
 import { SidebarProvider } from './sidebar';
 import { StatusBarController } from './statusBar';
+import { ChatPanel } from './chatPanel';
 
 let forge: ForgeWebSocket;
 let statusBar: StatusBarController;
 let sidebarProvider: SidebarProvider;
+let serverProcess: ChildProcess | null = null;
+let serverOutputChannel: vscode.OutputChannel;
+
+function startP9Server(extensionPath: string, outputChannel: vscode.OutputChannel): ChildProcess | null {
+    const agentDir = path.join(extensionPath, '..', '..', 'agent');
+    const entryPoint = path.join(agentDir, 'core', 'server.py');
+
+    outputChannel.appendLine('[Pide] Starting P9 server...');
+    outputChannel.appendLine('[Pide] Agent dir: ' + agentDir);
+
+    try {
+        const proc = spawn('python', [entryPoint], {
+            cwd: agentDir,
+            env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUNBUFFERED: '1' },
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        proc.stdout?.on('data', (data: Buffer) => {
+            const lines = data.toString().trim();
+            if (lines) {
+                outputChannel.appendLine('[P9] ' + lines);
+            }
+        });
+
+        proc.stderr?.on('data', (data: Buffer) => {
+            const lines = data.toString().trim();
+            if (lines) {
+                outputChannel.appendLine('[P9 ERR] ' + lines);
+            }
+        });
+
+        proc.on('error', (err) => {
+            outputChannel.appendLine('[Pide] Failed to start P9: ' + err.message);
+            vscode.window.showErrorMessage('Proton9: Failed to start agent server: ' + err.message);
+        });
+
+        proc.on('exit', (code, signal) => {
+            outputChannel.appendLine('[Pide] P9 server exited (code=' + code + ' signal=' + signal + ')');
+            serverProcess = null;
+        });
+
+        outputChannel.appendLine('[Pide] P9 server spawned (PID: ' + proc.pid + ')');
+        return proc;
+    } catch (err) {
+        outputChannel.appendLine('[Pide] Spawn error: ' + err);
+        return null;
+    }
+}
 
 export function activate(context: vscode.ExtensionContext): void {
     try {
@@ -17,6 +68,10 @@ export function activate(context: vscode.ExtensionContext): void {
         forge = new ForgeWebSocket(() =>
             vscode.workspace.getConfiguration('Proton9').get<string>('serverUrl', 'ws://localhost:9321')
         );
+
+        // Token buffering for Output channel (avoids word-per-line noise)
+        let tokenBuffer = '';
+        let tokenFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
         // Log ALL agent events to the Output Channel
         context.subscriptions.push(
@@ -42,9 +97,25 @@ export function activate(context: vscode.ExtensionContext): void {
                             outputChannel.appendLine('  ❌ ' + (msg.error || 'unknown error'));
                         }
                         break;
-                    case 'llm_token':
-                        outputChannel.append(msg.text || '');
+                    case 'llm_token': {
+                        // Buffer tokens to avoid word-per-line noise in Output channel
+                        if (!tokenBuffer) { tokenBuffer = ''; }
+                        tokenBuffer += (msg.text || '');
+                        if (tokenFlushTimer) { clearTimeout(tokenFlushTimer); }
+                        // Flush on newlines, sentence end, or after 500ms
+                        if (tokenBuffer.includes('\n') || /[.!?]\s*$/.test(tokenBuffer)) {
+                            outputChannel.append(tokenBuffer);
+                            tokenBuffer = '';
+                        } else {
+                            tokenFlushTimer = setTimeout(() => {
+                                if (tokenBuffer) {
+                                    outputChannel.append(tokenBuffer);
+                                    tokenBuffer = '';
+                                }
+                            }, 500);
+                        }
                         break;
+                    }
                     case 'task_complete':
                         outputChannel.appendLine('');
                         outputChannel.appendLine('═══════════════════════════════════════════');
@@ -84,8 +155,7 @@ export function activate(context: vscode.ExtensionContext): void {
                 });
                 if (task) {
                     const workDir =
-                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
-                        'c:\\DATA\\PrimeNexus\\Proton9';
+                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
                     const maxIter = vscode.workspace
                         .getConfiguration('Proton9')
                         .get<number>('maxIterations', 50);
@@ -105,14 +175,19 @@ export function activate(context: vscode.ExtensionContext): void {
                 console.log('[Proton9] runTaskDirect called with:', task);
                 if (task && typeof task === 'string') {
                     const workDir =
-                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
-                        'c:\\DATA\\PrimeNexus\\Proton9';
+                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
                     const maxIter = vscode.workspace
                         .getConfiguration('Proton9')
                         .get<number>('maxIterations', 50);
                     forge.runTask(task, workDir, maxIter);
                     vscode.window.showInformationMessage('[P9] Task sent: ' + task.substring(0, 50));
                 }
+            }),
+
+            vscode.commands.registerCommand('Proton9.openChat', () => {
+                // Open P9's web UI in VS Code's Simple Browser (guaranteed to work)
+                const guiUrl = 'http://localhost:9322';
+                vscode.commands.executeCommand('simpleBrowser.show', guiUrl);
             }),
 
             vscode.commands.registerCommand('Proton9.stopTask', () => {
@@ -122,7 +197,6 @@ export function activate(context: vscode.ExtensionContext): void {
 
         context.subscriptions.push(
             forge.onEvent((msg) => {
-                vscode.window.showInformationMessage(`[P9 DEBUG] Event: ${msg.type}`);
                 if (msg.type === 'connected') {
                     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
                     if (wsFolder) {
@@ -132,8 +206,18 @@ export function activate(context: vscode.ExtensionContext): void {
             })
         );
 
-        forge.connect();
-        vscode.window.showInformationMessage('[P9 DEBUG] forge.connect() called');
+        // Stage C: Auto-launch P9 server, then connect
+        serverProcess = startP9Server(context.extensionPath, outputChannel);
+        if (serverProcess) {
+            outputChannel.appendLine('[Pide] Waiting 3s for P9 to start...');
+            setTimeout(() => {
+                forge.connect();
+                console.log('[Proton9] Connecting to auto-launched P9 server');
+            }, 3000);
+        } else {
+            // Fallback: try to connect to existing server
+            forge.connect();
+        }
         console.log('[Proton9] Extension activated successfully');
     } catch (err) {
         console.error('[Proton9] Activation failed:', err);
@@ -143,6 +227,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
     try {
+        // Kill P9 server when Pide closes
+        if (serverProcess && !serverProcess.killed) {
+            serverProcess.kill();
+            serverOutputChannel?.appendLine('[Pide] P9 server stopped.');
+        }
         forge?.dispose();
         statusBar?.dispose();
         sidebarProvider?.dispose();

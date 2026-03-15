@@ -9,13 +9,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     constructor(
         private readonly extensionUri: vscode.Uri,
         private readonly forge: ForgeWebSocket
-    ) {
-        this.disposables.push(
-            forge.onEvent((msg) => {
-                this.postMessage(msg);
-            })
-        );
-    }
+    ) {}
 
     resolveWebviewView(webviewView: vscode.WebviewView): void {
         this.view = webviewView;
@@ -26,13 +20,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
         // Register message handler ONCE (survives html re-sets)
         webview.onDidReceiveMessage((msg) => {
-            console.log('[Proton9] Webview message received:', msg.type, JSON.stringify(msg));
-            vscode.window.showInformationMessage('[P9] Webview sent: ' + msg.type);
+            console.log('[Proton9] Webview message received:', msg.type);
             switch (msg.type) {
                 case 'run_task': {
                     const workDir =
-                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
-                        'c:\\DATA\\PrimeNexus\\Proton9';
+                        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
                     const maxIter = vscode.workspace
                         .getConfiguration('Proton9')
                         .get<number>('maxIterations', 50);
@@ -41,6 +33,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 }
                 case 'stop':
                     this.forge.stopTask();
+                    break;
+                case 'set_model':
+                    this.forge.setModel(msg.provider || '', msg.model || '');
+                    break;
+                case 'query_models':
+                    this.forge.queryModels(msg.provider || '');
                     break;
             }
         });
@@ -53,15 +51,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // Initial render with current state
         renderHtml(this.forge.connected, this.forge.serverVersion || '');
 
-        // Re-render on connection status changes
+        // Forward events to the webview — do NOT re-render HTML (that destroys event listeners)
         this.disposables.push(
             this.forge.onEvent((msg) => {
                 console.log('[Proton9] Event for webview:', msg.type);
                 try { webview.postMessage(msg); } catch { /* ignore */ }
-                if (msg.type === 'connected' || msg.type === 'disconnected') {
-                    const isConn = msg.type === 'connected';
-                    renderHtml(isConn, isConn ? (msg.version || '') : '');
-                }
             })
         );
     }
@@ -72,6 +66,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
     getHtml(initialConnected = false, initialVersion = ''): string {
         const nonce = this.getNonce();
+        // Build </script> at runtime so esbuild can't embed a literal </script> in the output
+        // (a literal </script> inside a <script> block breaks the HTML parser)
+        const scriptEnd = ['<', '/', 'script', '>'].join('');
 
         return `<!DOCTYPE html>
 <html lang="en">
@@ -89,6 +86,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .dot.disconnected { background:#f44747; }
         .dot.running { background:#dcdcaa; animation:pulse 1s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        #gear-btn { margin-left:auto; background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:14px; padding:2px 4px; line-height:1; opacity:0.7; }
+        #gear-btn:hover { opacity:1; color:var(--vscode-foreground); }
+        #model-label { font-size:10px; font-weight:400; color:var(--vscode-descriptionForeground); text-transform:none; letter-spacing:0; margin-left:4px; max-width:100px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        #settings-panel { display:none; padding:10px 12px; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-widget-border, #444); }
+        #settings-panel.open { display:block; }
+        #settings-panel label { display:block; font-size:11px; font-weight:600; margin-bottom:4px; color:var(--vscode-foreground); text-transform:uppercase; letter-spacing:0.3px; }
+        #settings-panel select, #settings-panel input[type=text] { width:100%; padding:5px 8px; border:1px solid var(--vscode-input-border, #444); background:var(--vscode-input-background); color:var(--vscode-input-foreground); font-family:var(--vscode-font-family); font-size:12px; border-radius:3px; outline:none; margin-bottom:8px; }
+        #settings-panel select:focus, #settings-panel input[type=text]:focus { border-color:var(--vscode-focusBorder); }
+        #save-model-btn { width:100%; padding:5px 10px; background:var(--vscode-button-background); color:var(--vscode-button-foreground); border:none; border-radius:3px; font-size:11px; font-weight:600; cursor:pointer; }
+        #save-model-btn:hover { background:var(--vscode-button-hoverBackground); }
+        .settings-row { margin-bottom:2px; }
         #chat-container { flex:1; overflow-y:auto; padding:8px; }
         #messages { display:flex; flex-direction:column; gap:8px; }
         .message { padding:8px 12px; border-radius:6px; font-size:13px; line-height:1.5; word-wrap:break-word; }
@@ -131,7 +139,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
     <div id="app">
-        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Connected (v' + initialVersion + ')' : 'Connecting...'}</span></div>
+        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Connected (v' + initialVersion + ')' : 'Connecting...'}</span><span id="model-label"></span><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="settings-panel">
+            <div class="settings-row">
+                <label for="provider-select">Provider</label>
+                <select id="provider-select"><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select>
+            </div>
+            <div class="settings-row">
+                <label for="model-select">Model</label>
+                <select id="model-select"><option value="">Loading...</option></select>
+            </div>
+            <button id="save-model-btn">💾 Save &amp; Apply</button>
+        </div>
         <div id="chat-container"><div id="messages"></div></div>
         <div id="input-area">
             <textarea id="task-input" placeholder="Describe your task..." rows="3"></textarea>
@@ -150,6 +169,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             const stopBtn = document.getElementById('stop-btn');
             const statusDot = document.getElementById('status-dot');
             const statusText = document.getElementById('status-text');
+            const modelLabel = document.getElementById('model-label');
+            const gearBtn = document.getElementById('gear-btn');
+            const settingsPanel = document.getElementById('settings-panel');
+            const providerSelect = document.getElementById('provider-select');
+            const modelSelect = document.getElementById('model-select');
+            const saveModelBtn = document.getElementById('save-model-btn');
             let isRunning = false;
             let streamingEl = null;
             let currentFeedEl = null;      // current Action Feed wrapper
@@ -157,6 +182,64 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             let currentPrompt = '';        // current task prompt
             let currentAnswer = '';        // task answer/summary
             let stepCount = 0;
+            let cachedModels = [];         // [{id, context_window}, ...]
+
+            function populateModels(models, currentModel) {
+                if (!modelSelect) return;
+                modelSelect.innerHTML = '';
+                var list = models || [];
+                if (list.length === 0) {
+                    var opt = document.createElement('option');
+                    opt.value = currentModel || '';
+                    opt.textContent = currentModel || '(none)';
+                    modelSelect.appendChild(opt);
+                    return;
+                }
+                for (var i = 0; i < list.length; i++) {
+                    var opt = document.createElement('option');
+                    var mid = list[i].id || list[i];
+                    opt.value = mid;
+                    opt.textContent = mid;
+                    if (mid === currentModel) { opt.selected = true; }
+                    modelSelect.appendChild(opt);
+                }
+                if (currentModel && !modelSelect.value) {
+                    var extra = document.createElement('option');
+                    extra.value = currentModel;
+                    extra.textContent = currentModel + ' (current)';
+                    extra.selected = true;
+                    modelSelect.insertBefore(extra, modelSelect.firstChild);
+                }
+            }
+
+            // ─── Settings Panel ───
+            gearBtn.addEventListener('click', function() {
+                settingsPanel.classList.toggle('open');
+            });
+
+            // Default models per provider (instant, no API call needed)
+            var defaultModels = {
+                deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+                gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
+                openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+                anthropic: ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022']
+            };
+
+            providerSelect.addEventListener('change', function() {
+                var prov = providerSelect.value;
+                var defs = defaultModels[prov] || [];
+                var defList = defs.map(function(id) { return { id: id }; });
+                populateModels(defList, defs[0] || '');
+                vscode.postMessage({ type: 'query_models', provider: prov });
+            });
+            saveModelBtn.addEventListener('click', function() {
+                var provider = providerSelect.value;
+                var model = modelSelect ? modelSelect.value : '';
+                if (!model) { addMessage('Please select a model.', 'error'); return; }
+                vscode.postMessage({ type: 'set_model', provider: provider, model: model });
+                settingsPanel.classList.remove('open');
+                addMessage('Switching to ' + provider + '/' + model + '...', 'system');
+            });
 
             function sendTask() {
                 const task = inputEl.value.trim();
@@ -166,25 +249,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 stepCount = 0;
                 addMessage(task, 'user');
                 inputEl.value = '';
-                // Use command URI to bypass broken postMessage
-                var encoded = encodeURIComponent(JSON.stringify(task));
-                var a = document.createElement('a');
-                a.href = 'command:Proton9.runTaskDirect?' + encoded;
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                vscode.postMessage({ type: 'run_task', task: task });
             }
 
             sendBtn.addEventListener('click', sendTask);
             inputEl.addEventListener('keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); } });
             stopBtn.addEventListener('click', function() {
-                var a = document.createElement('a');
-                a.href = 'command:Proton9.stopTask';
-                a.style.display = 'none';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
+                vscode.postMessage({ type: 'stop' });
                 addMessage('Stop requested...', 'system');
             });
 
@@ -192,7 +263,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 const msg = event.data;
                 if (!msg || !msg.type) return;
                 switch (msg.type) {
-                    case 'connected': setStatus('connected', 'Connected (v' + (msg.version || '?') + ')'); break;
+                    case 'connected':
+                        setStatus('connected', 'Connected (v' + (msg.version || '?') + ')');
+                        var cProv = msg.llm_provider || '';
+                        var cModel = msg.llm_model || '';
+                        if (cProv && providerSelect) { providerSelect.value = cProv; }
+                        cachedModels = msg.available_models || [];
+                        populateModels(cachedModels, cModel);
+                        if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
+                        break;
                     case 'disconnected': setStatus('disconnected', 'Disconnected'); setRunning(false); break;
                     case 'task_started': setRunning(true); setStatus('running', 'Running...'); createActionFeed(); break;
                     case 'action': endStreaming(); addAction(msg.step, msg.tool, msg.args); break;
@@ -201,6 +280,21 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     case 'task_complete': endStreaming(); setRunning(false); setStatus('connected', 'Done'); finalizeActionFeed(msg.result || {}); addCompletionCard(msg.result || {}); break;
                     case 'task_error': endStreaming(); setRunning(false); setStatus('connected', 'Error'); addMessage('Error: ' + (msg.error || 'Unknown'), 'error'); break;
                     case 'error': addMessage('Server: ' + (msg.message || msg.error || 'Unknown error'), 'error'); break;
+                    case 'model_changed':
+                        var mProv = msg.provider || '';
+                        var mModel = msg.model || '';
+                        var mLabel = mProv && mModel ? mProv + '/' + mModel : mModel || mProv || '?';
+                        addMessage('\u2705 Model switched to ' + mLabel, 'system');
+                        if (modelLabel) { modelLabel.textContent = mLabel; }
+                        if (mProv && providerSelect) { providerSelect.value = mProv; }
+                        if (mModel && modelSelect) { modelSelect.value = mModel; }
+                        break;
+                    case 'models_list':
+                        if (msg.provider === providerSelect.value) {
+                            var curVal = modelSelect ? modelSelect.value : '';
+                            populateModels(msg.models || [], curVal);
+                        }
+                        break;
                 }
             });
 
@@ -257,8 +351,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
             function copyActionFeed(btn) {
                 var parts = [];
-                if (currentPrompt) parts.push('Prompt:\n' + currentPrompt);
-                if (currentAnswer) parts.push('Answer:\n' + currentAnswer);
+                if (currentPrompt) parts.push('Prompt:\\n' + currentPrompt);
+                if (currentAnswer) parts.push('Answer:\\n' + currentAnswer);
                 // Gather all step text
                 var steps = currentFeedBody ? currentFeedBody.querySelectorAll('.action-step') : [];
                 if (steps.length) {
@@ -268,11 +362,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         var body = s.querySelector('.action-body');
                         var headerText = header ? header.textContent.replace(/[+\-]$/, '').trim() : '';
                         var bodyText = body ? body.textContent : '';
-                        stepLines.push(headerText + '\n' + bodyText);
+                        stepLines.push(headerText + '\\n' + bodyText);
                     });
-                    parts.push('Action Feed (' + steps.length + ' steps):\n' + stepLines.join('\n\n' + '-'.repeat(60) + '\n\n'));
+                    parts.push('Action Feed (' + steps.length + ' steps):\\n' + stepLines.join('\\n\\n' + '-'.repeat(60) + '\\n\\n'));
                 }
-                var text = parts.join('\n\n' + '='.repeat(60) + '\n\n');
+                var text = parts.join('\\n\\n' + '='.repeat(60) + '\\n\\n');
                 navigator.clipboard.writeText(text).then(function() {
                     btn.textContent = '✅ Copied';
                     setTimeout(function() { btn.textContent = '📋 Copy'; }, 1500);
@@ -353,7 +447,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     lines.push('🔍 Critic: No issues found ✓');
                 }
                 if (result.status) { lines.push(''); lines.push(result.status); }
-                el.textContent = lines.join('\n');
+                el.textContent = lines.join('\\n');
                 el.style.whiteSpace = 'pre-wrap';
                 el.style.fontFamily = 'var(--vscode-editor-font-family)';
                 el.style.fontSize = '12px';
@@ -372,7 +466,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             function scrollToBottom() { var c = document.getElementById('chat-container'); c.scrollTop = c.scrollHeight; }
             function esc(s) { var d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
         })();
-    </script>
+    ${scriptEnd}
 </body>
 </html>`;
     }
