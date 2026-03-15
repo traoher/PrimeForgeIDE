@@ -380,10 +380,87 @@ class ForgeServer:
                         "type": "error",
                         "message": f"Revert failed: {e}",
                     }))
+        elif msg_type == "complete":
+            # Inline autocomplete — fast FIM completion via Gemini flash-lite
+            asyncio.ensure_future(self._handle_completion(data, websocket))
         else:
             await websocket.send(json.dumps({
                 "type": "error", "message": f"Unknown message type: {msg_type}"
             }))
+
+    async def _handle_completion(self, data: dict, websocket):
+        """Handle inline autocomplete requests using Gemini flash-lite."""
+        prefix = data.get("prefix", "")
+        suffix = data.get("suffix", "")
+        language = data.get("language", "")
+
+        if not prefix or len(prefix.strip()) < 5:
+            return  # Too little context, no completion
+
+        try:
+            loop = asyncio.get_event_loop()
+            completion = await asyncio.wait_for(
+                loop.run_in_executor(None, self._generate_completion, prefix, suffix, language),
+                timeout=3.0,
+            )
+            if completion:
+                await websocket.send(json.dumps({
+                    "type": "completion_result",
+                    "completion": completion,
+                }))
+        except asyncio.TimeoutError:
+            pass  # Silently drop — user may have moved on
+        except Exception:
+            pass  # Don't interrupt typing with errors
+
+    def _generate_completion(self, prefix: str, suffix: str, language: str) -> str:
+        """Generate code completion using Gemini flash-lite (fast)."""
+        try:
+            from google import genai
+
+            api_key = None
+            for k, v in os.environ.items():
+                if k.startswith("GEMINI_API_KEY") and v.strip():
+                    api_key = v.strip()
+                    break
+            if not api_key:
+                return ""
+
+            client = genai.Client(api_key=api_key)
+
+            # Fill-In-Middle prompt
+            fim_prompt = f"""Complete the following {language} code. Output ONLY the code that should come next, nothing else. Do not repeat existing code. Do not add explanations.
+
+{prefix}"""
+
+            if suffix.strip():
+                fim_prompt += f"\n\n# Code that follows:\n{suffix}"
+
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                contents=fim_prompt,
+                config=genai.types.GenerateContentConfig(
+                    max_output_tokens=150,
+                    temperature=0.1,
+                    stop_sequences=["\n\n\n", "```"],
+                ),
+            )
+
+            text = (response.text or "").strip()
+            # Clean up: remove markdown code fences if present
+            if text.startswith("```"):
+                lines = text.split("\n")
+                lines = [l for l in lines if not l.startswith("```")]
+                text = "\n".join(lines).strip()
+
+            # Limit to max 5 lines of completion
+            lines = text.split("\n")
+            if len(lines) > 5:
+                text = "\n".join(lines[:5])
+
+            return text
+        except Exception:
+            return ""
 
     async def _handle_set_model(self, data: dict, websocket):
         """Handle model switching from the GUI."""

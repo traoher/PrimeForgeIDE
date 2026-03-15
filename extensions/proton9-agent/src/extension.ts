@@ -5,6 +5,7 @@ import { ForgeWebSocket } from './websocket';
 import { SidebarProvider } from './sidebar';
 import { StatusBarController } from './statusBar';
 import { ChatPanel } from './chatPanel';
+import { InlineCompletionProvider } from './inlineCompletion';
 
 let forge: ForgeWebSocket;
 let statusBar: StatusBarController;
@@ -211,6 +212,26 @@ export function activate(context: vscode.ExtensionContext): void {
 
             vscode.commands.registerCommand('Proton9.stopTask', () => {
                 forge.stopTask();
+            })
+        );
+
+        // Inline Autocomplete — Tab to accept ghost text
+        const autocompleteProvider = new InlineCompletionProvider(forge);
+        context.subscriptions.push(
+            vscode.languages.registerInlineCompletionItemProvider(
+                { pattern: '**' },
+                autocompleteProvider,
+            )
+        );
+        context.subscriptions.push(
+            vscode.commands.registerCommand('Proton9.toggleAutocomplete', () => {
+                const config = vscode.workspace.getConfiguration('Proton9');
+                const current = config.get<boolean>('autocomplete.enabled', true);
+                config.update('autocomplete.enabled', !current, true);
+                autocompleteProvider.setEnabled(!current);
+                vscode.window.showInformationMessage(
+                    `Proton9 Autocomplete: ${!current ? 'ON' : 'OFF'}`
+                );
             })
         );
 
