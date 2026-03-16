@@ -138,6 +138,24 @@ class EnhancedMemory(QuantumMemory):
         conn.commit()
         conn.close()
 
+    def delete_session_data(self, session_id: str):
+        """Delete all data associated with a session from SQLite."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM ActionHistory WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM SessionSummaries WHERE session_id = ?", (session_id,))
+            cursor.execute("DELETE FROM Patterns WHERE extracted_from_session_id = ?", (session_id,))
+            # Also delete ensembles linked to this session
+            cursor.execute("DELETE FROM Ensembles WHERE id LIKE ?", (f"%{session_id}%",))
+            conn.commit()
+            deleted = cursor.rowcount
+            print(f"  [MEMORY] Deleted session data for {session_id}")
+        except Exception as e:
+            print(f"  [MEMORY] Error deleting session {session_id}: {e}")
+        finally:
+            conn.close()
+
     def record_action(self, session_id: str, tool_name: str, args: dict, result: dict, success: bool, thought: str = None, duration: float = 0.0):
         """Record a single action in the history."""
         conn = sqlite3.connect(self.db_path)

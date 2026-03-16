@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-03-15T16:06:20.551467",
+  "updated_at": "2026-03-15T21:52:15.778309",
   "day": {
     "2026-03-14": {
       "_total": {
@@ -21,19 +21,19 @@
     },
     "2026-03-15": {
       "_total": {
-        "input_tokens": 288918,
-        "output_tokens": 9863,
-        "calls": 215
+        "input_tokens": 395107,
+        "output_tokens": 14997,
+        "calls": 287
       },
       "gemini-2.5-flash": {
-        "input_tokens": 166834,
-        "output_tokens": 8105,
-        "calls": 115
+        "input_tokens": 184030,
+        "output_tokens": 10801,
+        "calls": 151
       },
       "deepseek-chat": {
-        "input_tokens": 101758,
-        "output_tokens": 1412,
-        "calls": 97
+        "input_tokens": 190751,
+        "output_tokens": 3850,
+        "calls": 133
       },
       "gemini/gemini-3.1-flash-image-preview": {
         "input_tokens": 13765,
@@ -50,19 +50,19 @@
   "week": {
     "2026-W11": {
       "_total": {
-        "input_tokens": 533364,
-        "output_tokens": 11990,
-        "calls": 253
+        "input_tokens": 639553,
+        "output_tokens": 17124,
+        "calls": 325
       },
       "deepseek-chat": {
-        "input_tokens": 343814,
-        "output_tokens": 3065,
-        "calls": 126
+        "input_tokens": 432807,
+        "output_tokens": 5503,
+        "calls": 162
       },
       "gemini-2.5-flash": {
-        "input_tokens": 169224,
-        "output_tokens": 8579,
-        "calls": 124
+        "input_tokens": 186420,
+        "output_tokens": 11275,
+        "calls": 160
       },
       "gemini/gemini-3.1-flash-image-preview": {
         "input_tokens": 13765,
@@ -79,19 +79,19 @@
   "month": {
     "2026-03": {
       "_total": {
-        "input_tokens": 533364,
-        "output_tokens": 11990,
-        "calls": 253
+        "input_tokens": 639553,
+        "output_tokens": 17124,
+        "calls": 325
       },
       "deepseek-chat": {
-        "input_tokens": 343814,
-        "output_tokens": 3065,
-        "calls": 126
+        "input_tokens": 432807,
+        "output_tokens": 5503,
+        "calls": 162
       },
       "gemini-2.5-flash": {
-        "input_tokens": 169224,
-        "output_tokens": 8579,
-        "calls": 124
+        "input_tokens": 186420,
+        "output_tokens": 11275,
+        "calls": 160
       },
       "gemini/gemini-3.1-flash-image-preview": {
         "input_tokens": 13765,
@@ -107,19 +107,19 @@
   },
   "lifetime": {
     "_total": {
-      "input_tokens": 533364,
-      "output_tokens": 11990,
-      "calls": 253
+      "input_tokens": 639553,
+      "output_tokens": 17124,
+      "calls": 325
     },
     "deepseek-chat": {
-      "input_tokens": 343814,
-      "output_tokens": 3065,
-      "calls": 126
+      "input_tokens": 432807,
+      "output_tokens": 5503,
+      "calls": 162
     },
     "gemini-2.5-flash": {
-      "input_tokens": 169224,
-      "output_tokens": 8579,
-      "calls": 124
+      "input_tokens": 186420,
+      "output_tokens": 11275,
+      "calls": 160
     },
     "gemini/gemini-3.1-flash-image-preview": {
       "input_tokens": 13765,

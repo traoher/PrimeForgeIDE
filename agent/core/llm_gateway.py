@@ -468,7 +468,8 @@ class OpenAIProvider:
                 for t in tools
             ]
 
-        kwargs = {"model": self.model, "messages": oai_messages, "stream": True}
+        kwargs = {"model": self.model, "messages": oai_messages, "stream": True,
+                  "stream_options": {"include_usage": True}}
         if oai_tools:
             kwargs["tools"] = oai_tools
             kwargs["tool_choice"] = "auto"
@@ -479,10 +480,17 @@ class OpenAIProvider:
         tool_call_dict = None
         tool_name = ""
         tool_args_str = ""
+        stream_usage = {"input_tokens": 0, "output_tokens": 0}
 
         try:
             stream = self.client.chat.completions.create(**kwargs)
             for chunk in stream:
+                # Capture usage from final chunk (sent when stream_options.include_usage=True)
+                if hasattr(chunk, "usage") and chunk.usage:
+                    stream_usage = {
+                        "input_tokens": getattr(chunk.usage, "prompt_tokens", 0) or 0,
+                        "output_tokens": getattr(chunk.usage, "completion_tokens", 0) or 0,
+                    }
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -513,10 +521,15 @@ class OpenAIProvider:
                     args = {}
                 tool_call_dict = {"name": tool_name, "arguments": args}
 
+            # Fallback: estimate from chars if API didn't return usage
+            if stream_usage["input_tokens"] == 0 and stream_usage["output_tokens"] == 0:
+                total_chars = sum(len(t) for t in full_text)
+                stream_usage["output_tokens"] = total_chars // 4  # ~4 chars/token estimate
+
             return LLMResponse(
                 text="".join(full_text),
                 tool_call=tool_call_dict,
-                usage={"input_tokens": 0, "output_tokens": 0},  # Stream doesn't return usage
+                usage=stream_usage,
             )
         except Exception:
             # Fallback to non-streaming

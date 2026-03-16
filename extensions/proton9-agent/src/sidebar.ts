@@ -150,6 +150,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                                 id: msg.sessionId,
                                 title: msg.title || '',
                                 messages: msg.messages || [],
+                                events: msg.events || [],
                                 savedAt: new Date().toISOString(),
                             }, null, 2), 'utf-8');
                             console.log('[Proton9] Chat saved:', filepath);
@@ -163,6 +164,28 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     // Tell server to recontext to a different session/ensemble
                     this.forge.send({ type: 'switch_session', session_id: msg.sessionId || '' });
                     break;
+                case 'delete_chat': {
+                    // Delete chat JSON file from .proton9/chats/
+                    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder && msg.sessionId) {
+                        const fs = require('fs');
+                        const path = require('path');
+                        const chatsDir = path.join(wsFolder, '.proton9', 'chats');
+                        try {
+                            const files = fs.readdirSync(chatsDir);
+                            const match = files.find((f: string) => f.startsWith(msg.sessionId));
+                            if (match) {
+                                fs.unlinkSync(path.join(chatsDir, match));
+                                console.log('[Proton9] Chat deleted:', match);
+                            }
+                        } catch (err) {
+                            console.error('[Proton9] Chat delete error:', err);
+                        }
+                    }
+                    // Also tell server to clean up SQLite session data
+                    this.forge.send({ type: 'delete_chat', session_id: msg.sessionId || '' });
+                    break;
+                }
                 case 'revert_file':
                     // Send revert to server with snapshot data
                     this.forge.send({ type: 'revert_file', path: msg.path || '', snapshot: msg.snapshot });
@@ -302,6 +325,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         #send-btn:hover { background:var(--vscode-button-hoverBackground); }
         #stop-btn { background:#f44747; color:white; flex:1; }
         .hidden { display:none !important; }
+        #token-budget { font-size:11px; color:#4ec9b0; opacity:0.9; padding:0 6px; white-space:nowrap; font-family:var(--vscode-editor-font-family); font-variant-numeric:tabular-nums; }
+        #token-budget:empty { display:none; }
+        #token-budget.active { color:#dcdcaa; display:inline; }
         #new-chat-btn { background:transparent; border:1px solid var(--vscode-button-background); color:var(--vscode-button-background); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:4px; min-width:unset; }
         #new-chat-btn:hover { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
         #history-btn { background:transparent; border:1px solid var(--vscode-widget-border, #444); color:var(--vscode-foreground); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:2px; min-width:unset; }
@@ -313,11 +339,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .history-item.active { background:var(--vscode-list-activeSelectionBackground, #094771); color:var(--vscode-list-activeSelectionForeground, #fff); }
         .history-item .title { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .history-item .count { font-size:10px; opacity:0.6; margin-left:8px; white-space:nowrap; }
+        .history-item .delete-btn { background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:14px; padding:0 4px; opacity:0.5; min-width:unset; }
+        .history-item .delete-btn:hover { color:#f44747; opacity:1; }
     </style>
 </head>
 <body>
     <div id="app">
-        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><span id="token-budget"></span><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
         <div id="history-panel"></div>
         <div id="settings-panel">
             <div class="settings-row">
@@ -366,6 +394,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             let stepCount = 0;
             let cachedModels = [];         // [{id, context_window}, ...]
             let streamBuffer = '';          // accumulate LLM tokens for saving
+            var eventLog = [];              // all UI events for session replay
 
             // ─── Multi-session chat history ───
             var sessions = [];             // [{id, title, messages: [{type, text, ts}]}]
@@ -381,10 +410,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             }
 
             function saveState() {
-                // Update active session's messages and title
+                // Update active session's messages, events, and title
                 var active = sessions.find(function(s) { return s.id === activeSessionId; });
                 if (active) {
                     active.messages = chatMessages;
+                    active.events = eventLog;
                     active.title = deriveTitle(chatMessages);
                 }
                 vscode.setState({ sessions: sessions, activeSessionId: activeSessionId });
@@ -395,18 +425,68 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 if (!session) return;
                 activeSessionId = sessionId;
                 chatMessages = session.messages || [];
+                eventLog = session.events || [];
                 messagesEl.innerHTML = '';
-                chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
                 currentPrompt = '';
                 currentAnswer = '';
                 stepCount = 0;
                 streamBuffer = '';
                 currentFeedEl = null;
                 currentFeedBody = null;
+                // Replay events to rebuild full UI
+                if (eventLog.length > 0) {
+                    replayEvents(eventLog);
+                } else {
+                    // Fallback: old format — just text messages
+                    chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
+                }
                 saveState();
                 renderHistory();
                 // Tell server to recontext to this session's ensemble
                 vscode.postMessage({ type: 'switch_session', sessionId: sessionId });
+            }
+
+            function replayEvents(events) {
+                for (var i = 0; i < events.length; i++) {
+                    var evt = events[i];
+                    switch (evt.type) {
+                        case 'user_message':
+                            addMessage(evt.text, 'user', true);
+                            break;
+                        case 'assistant_text':
+                            addMessage(evt.text, 'assistant', true);
+                            break;
+                        case 'system_message':
+                            addMessage(evt.text, 'system', true);
+                            break;
+                        case 'error_message':
+                            addMessage(evt.text, 'error', true);
+                            break;
+                        case 'action_feed_start':
+                            currentPrompt = evt.prompt || '';
+                            createActionFeed();
+                            break;
+                        case 'action':
+                            addAction(evt.step, evt.tool, evt.args);
+                            break;
+                        case 'result':
+                            updateLastAction(evt.success, evt.output, evt.error);
+                            break;
+                        case 'action_feed_end':
+                            finalizeActionFeed(evt.result || {});
+                            break;
+                        case 'completion':
+                            addCompletionCard(evt.data);
+                            break;
+                        case 'file_changed':
+                            addFileChangeCard(evt.path, evt.diff, evt.tool, evt.snapshot, evt.is_new);
+                            break;
+                        case 'artifact':
+                            addArtifactCard(evt.title, evt.content, evt.artifact_type);
+                            break;
+                    }
+                }
+                scrollToBottom();
             }
 
             function createNewSession() {
@@ -421,6 +501,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 sessions.unshift({ id: newId, title: 'New Chat', messages: [] });
                 activeSessionId = newId;
                 chatMessages = [];
+                eventLog = [];
                 messagesEl.innerHTML = '';
                 currentPrompt = '';
                 currentAnswer = '';
@@ -443,13 +524,43 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     var el = document.createElement('div');
                     el.className = 'history-item' + (s.id === activeSessionId ? ' active' : '');
                     var count = s.messages ? s.messages.filter(function(m) { return m.type === 'user'; }).length : 0;
-                    el.innerHTML = '<span class="title">' + esc(s.title) + '</span><span class="count">' + count + ' msg</span>';
+                    var titleSpan = document.createElement('span');
+                    titleSpan.className = 'title';
+                    titleSpan.textContent = s.title || 'New Chat';
+                    var countSpan = document.createElement('span');
+                    countSpan.className = 'count';
+                    countSpan.textContent = count + ' msg';
+                    var delBtn = document.createElement('button');
+                    delBtn.className = 'delete-btn';
+                    delBtn.textContent = '\u2715';
+                    delBtn.title = 'Delete this chat';
+                    delBtn.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        deleteSession(s.id);
+                    });
+                    el.appendChild(titleSpan);
+                    el.appendChild(countSpan);
+                    el.appendChild(delBtn);
                     el.addEventListener('click', function() {
                         loadSession(s.id);
                         panel.classList.remove('open');
                     });
                     panel.appendChild(el);
                 });
+            }
+
+            function deleteSession(sessionId) {
+                sessions = sessions.filter(function(s) { return s.id !== sessionId; });
+                vscode.postMessage({ type: 'delete_chat', sessionId: sessionId });
+                if (sessionId === activeSessionId) {
+                    if (sessions.length > 0) {
+                        loadSession(sessions[0].id);
+                    } else {
+                        createNewSession();
+                    }
+                }
+                saveState();
+                renderHistory();
             }
 
             // Restore saved sessions on load
@@ -460,7 +571,12 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 var activeSession = sessions.find(function(s) { return s.id === activeSessionId; });
                 if (activeSession) {
                     chatMessages = activeSession.messages || [];
-                    chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
+                    eventLog = activeSession.events || [];
+                    if (eventLog.length > 0) {
+                        replayEvents(eventLog);
+                    } else {
+                        chatMessages.forEach(function(m) { addMessage(m.text, m.type, true); });
+                    }
                 }
             } else {
                 // First time: create initial session
@@ -555,6 +671,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 stepCount = 0;
                 streamBuffer = '';
                 addMessage(task, 'user');
+                eventLog.push({ type: 'user_message', text: task, ts: Date.now() });
                 inputEl.value = '';
                 vscode.postMessage({ type: 'run_task', task: task, sessionId: activeSessionId });
             }
@@ -578,25 +695,59 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         cachedModels = msg.available_models || [];
                         populateModels(cachedModels, cModel);
                         if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
+                        var initBudget = document.getElementById('token-budget');
+                        if (initBudget) { initBudget.textContent = '$0.00 | 0 tok'; initBudget.className = 'active'; initBudget.title = 'No usage yet'; }
                         break;
                     case 'disconnected': setStatus('disconnected', 'Disconnected'); setRunning(false); break;
-                    case 'task_started': setRunning(true); setStatus('running', 'Running...'); createActionFeed(); break;
-                    case 'action': endStreaming(); addAction(msg.step, msg.tool, msg.args); break;
-                    case 'result': updateLastAction(msg.success, msg.output, msg.error); break;
+                    case 'task_started':
+                        setRunning(true); setStatus('running', 'Running...');
+                        createActionFeed();
+                        eventLog.push({ type: 'action_feed_start', prompt: currentPrompt, ts: Date.now() });
+                        var tb = document.getElementById('token-budget'); if(tb){tb.textContent='';tb.className='';}
+                        break;
+                    case 'action':
+                        endStreaming();
+                        addAction(msg.step, msg.tool, msg.args);
+                        eventLog.push({ type: 'action', step: msg.step, tool: msg.tool, args: msg.args, ts: Date.now() });
+                        break;
+                    case 'result':
+                        updateLastAction(msg.success, msg.output, msg.error);
+                        eventLog.push({ type: 'result', success: msg.success, output: (msg.output || '').substring(0, 500), error: msg.error, ts: Date.now() });
+                        break;
                     case 'llm_token': appendStream(msg.text || ''); streamBuffer += (msg.text || ''); break;
+                    case 'token_update':
+                        var budgetEl = document.getElementById('token-budget');
+                        if (budgetEl) {
+                            var inT = msg.input_tokens || 0;
+                            var outT = msg.output_tokens || 0;
+                            var totalT = inT + outT;
+                            var costVal = msg.cost_usd || 0;
+                            var fmtTok = function(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'K' : String(n); };
+                            var fmtCost = costVal < 0.01 ? '$' + costVal.toFixed(4) : '$' + costVal.toFixed(2);
+                            budgetEl.textContent = fmtCost + ' | ' + fmtTok(totalT) + ' tok';
+                            budgetEl.className = 'active';
+                            budgetEl.title = 'Input: ' + fmtTok(inT) + ' | Output: ' + fmtTok(outT) + ' | Cost: ' + fmtCost;
+                        }
+                        break;
                     case 'task_complete':
                         endStreaming();
                         setRunning(false);
                         setStatus('connected', 'Ready');
-                        finalizeActionFeed(msg.result || {});
+                        var taskResult = msg.result || {};
+                        finalizeActionFeed(taskResult);
+                        eventLog.push({ type: 'action_feed_end', result: { summary: taskResult.summary, files_changed: taskResult.files_changed, actions: (taskResult.actions || []).map(function(a) { return { step: a.step, success: a.success }; }) }, ts: Date.now() });
                         // Save the full agent response as a message
-                        var summary = (msg.result || {}).summary || '';
+                        var summary = taskResult.summary || '';
                         var responseText = streamBuffer || summary || '(no response)';
                         addMessage(responseText, 'assistant');
+                        eventLog.push({ type: 'assistant_text', text: responseText, ts: Date.now() });
                         streamBuffer = '';
-                        addCompletionCard(msg.result || {});
+                        addCompletionCard(taskResult);
+                        eventLog.push({ type: 'completion', data: { summary: taskResult.summary, files_changed: taskResult.files_changed, actions: taskResult.actions, usage: taskResult.usage, critic_findings: taskResult.critic_findings }, ts: Date.now() });
+                        // Keep event log manageable
+                        if (eventLog.length > 500) eventLog = eventLog.slice(-500);
                         // Persist full session to file
-                        vscode.postMessage({ type: 'save_chat', sessionId: activeSessionId, title: deriveTitle(chatMessages), messages: chatMessages });
+                        vscode.postMessage({ type: 'save_chat', sessionId: activeSessionId, title: deriveTitle(chatMessages), messages: chatMessages, events: eventLog });
                         break;
                     case 'task_error': endStreaming(); setRunning(false); setStatus('connected', 'Ready'); addMessage('Error: ' + (msg.error || 'Unknown'), 'error'); streamBuffer = ''; break;
                     case 'error': addMessage('Server: ' + (msg.message || msg.error || 'Unknown error'), 'error'); break;
@@ -617,6 +768,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'file_changed':
                         addFileChangeCard(msg.path, msg.diff, msg.tool, msg.snapshot, msg.is_new);
+                        eventLog.push({ type: 'file_changed', path: msg.path, diff: (msg.diff || '').substring(0, 1000), tool: msg.tool, snapshot: null, is_new: msg.is_new, ts: Date.now() });
                         // Also open the file in the editor
                         vscode.postMessage({ type: 'open_file', path: msg.path });
                         break;
@@ -630,6 +782,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'task_artifact':
                         addArtifactCard(msg.title, msg.content, msg.artifact_type);
+                        eventLog.push({ type: 'artifact', title: msg.title, content: (msg.content || '').substring(0, 2000), artifact_type: msg.artifact_type, ts: Date.now() });
                         break;
                 }
             });

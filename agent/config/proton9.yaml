@@ -1,8 +1,6 @@
 llm:
   provider: deepseek
   model: deepseek-chat
-  fast_provider: gemini
-  fast_model: gemini-2.5-flash
   fallback_provider: deepseek
   call_timeout_seconds: 180
   throttle_max_wait_seconds: 45

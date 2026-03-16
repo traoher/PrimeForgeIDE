@@ -56,25 +56,12 @@ class ForgeServer:
             print("  [SERVER] EnhancedMemory initialised")
 
         # Fast LLM for Phase 0 (Resolve) and Phase 2 (Collapse)
+        # Falls back to user's provider if fast_provider not explicitly set
         self.fast_llm = None
         llm_cfg = self.config.get("llm", {})
-        fast_provider = llm_cfg.get("fast_provider")
-        fast_model = llm_cfg.get("fast_model")
-        if fast_provider and LLMGateway:
-            try:
-                self.fast_llm = LLMGateway(
-                    provider=fast_provider,
-                    model=fast_model,
-                    call_timeout_seconds=30,
-                    throttle_max_wait_seconds=10,
-                    transient_retries=2,
-                )
-                print(f"  [SERVER] Fast LLM: {fast_provider}/{fast_model}")
-            except Exception as e:
-                print(f"  [SERVER] Fast LLM init FAILED: {e}")
-                self.fast_llm = None
-        else:
-            print(f"  [SERVER] Fast LLM skipped: provider={fast_provider}, gateway={'yes' if LLMGateway else 'no'}")
+        fast_provider = llm_cfg.get("fast_provider") or llm_cfg.get("provider")
+        fast_model = llm_cfg.get("fast_model") or llm_cfg.get("model")
+        self._init_fast_llm(fast_provider, fast_model)
 
         context_cfg = (self.config.get("context") or {})
         self.context = ContextManager(
@@ -88,6 +75,8 @@ class ForgeServer:
         self.agent: Agent | None = None
         self.current_task: asyncio.Task | None = None
         self.stop_requested: bool = False
+        # Cumulative token/cost tracker (persists across tasks in session)
+        self._session_tokens = {"input": 0, "output": 0, "cost": 0.0, "chars": 0}
 
         # Pricing manager
         self.pricing = None
@@ -110,6 +99,25 @@ class ForgeServer:
 
         # Query available models for the configured provider
         self.available_models = self._query_available_models()
+
+    def _init_fast_llm(self, provider: str, model: str):
+        """Initialize or re-initialize fast_llm with given provider/model."""
+        self.fast_llm = None
+        if provider and LLMGateway:
+            try:
+                self.fast_llm = LLMGateway(
+                    provider=provider,
+                    model=model,
+                    call_timeout_seconds=30,
+                    throttle_max_wait_seconds=10,
+                    transient_retries=2,
+                )
+                print(f"  [SERVER] Fast LLM: {provider}/{model}")
+            except Exception as e:
+                print(f"  [SERVER] Fast LLM init FAILED: {e}")
+                self.fast_llm = None
+        else:
+            print(f"  [SERVER] Fast LLM skipped: provider={provider}")
 
     def _load_config(self) -> dict:
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -295,6 +303,20 @@ class ForgeServer:
                 "type": "info",
                 "message": "Context cleared.",
             }))
+        elif msg_type == "delete_chat":
+            # Delete session data from context + SQLite
+            del_session_id = (data.get("session_id") or "").strip()
+            if del_session_id:
+                # Clear in-memory context
+                self.context.clear_session(session_key)
+                # Delete from SQLite
+                if self.memory_enabled and self.memory:
+                    self.memory.delete_session_data(del_session_id)
+                await websocket.send(json.dumps({
+                    "type": "info",
+                    "message": f"Session {del_session_id} deleted.",
+                }))
+                print(f"  [SERVER] Deleted chat session: {del_session_id}")
         elif msg_type == "set_model":
             await self._handle_set_model(data, websocket)
         elif msg_type == "query_models":
@@ -383,6 +405,9 @@ class ForgeServer:
         elif msg_type == "complete":
             # Inline autocomplete — fast FIM completion via Gemini flash-lite
             asyncio.ensure_future(self._handle_completion(data, websocket))
+        elif msg_type == "run_multi":
+            # Multi-agent parallel execution
+            asyncio.ensure_future(self._handle_multi_agent(data, websocket))
         else:
             await websocket.send(json.dumps({
                 "type": "error", "message": f"Unknown message type: {msg_type}"
@@ -462,6 +487,80 @@ class ForgeServer:
         except Exception:
             return ""
 
+    async def _handle_multi_agent(self, data: dict, websocket):
+        """Handle multi-agent parallel execution."""
+        task = (data.get("task") or "").strip()
+        working_dir = (data.get("working_dir") or "").strip() or self.workspace_dir or "."
+        max_agents = min(int(data.get("max_agents", 4) or 4), 4)
+
+        if not task:
+            await websocket.send(json.dumps({"type": "error", "message": "No task provided"}))
+            return
+
+        try:
+            from core.multi_agent import MultiAgentOrchestrator
+
+            # Broadcast start
+            await self.broadcast("task_started", {
+                "task": task,
+                "mode": "multi-agent",
+                "max_agents": max_agents,
+            })
+
+            loop = asyncio.get_event_loop()
+
+            def run_multi_sync():
+                orchestrator = MultiAgentOrchestrator(
+                    working_dir=working_dir,
+                    config=self.config,
+                    max_agents=max_agents,
+                )
+
+                # Event callback that broadcasts to all clients
+                def event_cb(event_type, event_data):
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcast(event_type, event_data),
+                        self._loop,
+                    )
+
+                # Decompose
+                subtasks = orchestrator.decompose(task)
+                print(f"  [MULTI-AGENT] Decomposed into {len(subtasks)} sub-tasks")
+                for i, st in enumerate(subtasks):
+                    print(f"    Agent {i+1}: {st[:80]}")
+
+                if len(subtasks) <= 1:
+                    # Single sub-task — no need for multi-agent
+                    return {"fallback": True, "task": subtasks[0] if subtasks else task}
+
+                # Run in parallel
+                return orchestrator.run_parallel(subtasks, event_callback=event_cb)
+
+            result = await loop.run_in_executor(None, run_multi_sync)
+
+            # If decomposition resulted in single task, fall back to normal run
+            if isinstance(result, dict) and result.get("fallback"):
+                session_key = self._resolve_session_key(websocket, data)
+                await self.run_task({
+                    **data,
+                    "task": result["task"],
+                }, websocket, session_key)
+                return
+
+            # Report final result
+            await self.broadcast("task_complete", {
+                "result": {
+                    "summary": result.get("summary", "Multi-agent task complete"),
+                    "files_changed": result.get("files_changed", []),
+                    "agents": result.get("total_agents", 0),
+                    "succeeded": result.get("succeeded", 0),
+                    "elapsed": result.get("elapsed", 0),
+                },
+            })
+
+        except Exception as e:
+            await self.broadcast("task_error", {"error": f"Multi-agent error: {str(e)}"})
+
     async def _handle_set_model(self, data: dict, websocket):
         """Handle model switching from the GUI."""
         new_model = (data.get("model") or "").strip()
@@ -479,7 +578,13 @@ class ForgeServer:
         if new_provider:
             llm_cfg["provider"] = new_provider
         self._save_config()
-        print(f"  [SERVER] Model switched: {old_provider}/{old_model} -> {new_provider or old_provider}/{new_model}")
+        # Rebuild fast_llm to use the new provider/model (unless explicitly overridden)
+        effective_provider = new_provider or llm_cfg.get("provider", "")
+        if not llm_cfg.get("fast_provider") or llm_cfg.get("fast_provider") == old_provider:
+            llm_cfg.pop("fast_provider", None)
+            llm_cfg.pop("fast_model", None)
+            self._init_fast_llm(effective_provider, new_model)
+        print(f"  [SERVER] Model switched: {old_provider}/{old_model} -> {effective_provider}/{new_model}")
 
         # Broadcast to all clients so header updates everywhere
         await self.broadcast("model_changed", {
@@ -920,6 +1025,22 @@ class ForgeServer:
             if git_diff:
                 result["git_diff"] = git_diff
 
+            # Broadcast final accurate token counts from agent result
+            usage = (result or {}).get("usage", {})
+            final_in = usage.get("total_input_tokens", 0)
+            final_out = usage.get("total_output_tokens", 0)
+            final_cost = usage.get("current_session", {}).get("total_cost_usd", 0)
+            # Accumulate into session totals (replace char estimate with real counts)
+            self._session_tokens["input"] += final_in
+            self._session_tokens["output"] += final_out
+            self._session_tokens["cost"] += final_cost
+            self._session_tokens["chars"] = 0  # reset char estimator
+            await self.broadcast("token_update", {
+                "input_tokens": self._session_tokens["input"],
+                "output_tokens": self._session_tokens["output"],
+                "cost_usd": round(self._session_tokens["cost"], 6),
+            })
+
             await self.broadcast("task_complete", {
                 "result": result,
                 "cumulative_usage": self._get_cumulative_usage(),
@@ -995,11 +1116,35 @@ class ForgeServer:
         agent._print_result = patched_print_result
 
         # Event callback for real-time streaming (Feature C)
+        _task_chars = [0]  # chars in THIS task (for throttle)
+
         def stream_event(event_type: str, data: dict):
             asyncio.run_coroutine_threadsafe(
                 self.broadcast(event_type, data),
                 self._loop,
             )
+            # Track token usage from streamed text
+            if event_type == "llm_token":
+                chunk_len = len(data.get("text", ""))
+                _task_chars[0] += chunk_len
+                self._session_tokens["chars"] += chunk_len
+                # Broadcast every ~80 chars (simple count throttle)
+                if _task_chars[0] % 80 < chunk_len:
+                    est_out = self._session_tokens["chars"] // 4
+                    total_out = self._session_tokens["output"] + est_out
+                    total_in = self._session_tokens["input"]
+                    cost = self._session_tokens["cost"]
+                    if self.pricing:
+                        model_name = self.config.get("llm", {}).get("model", "")
+                        cost += self.pricing.estimate_cost(model_name, 0, est_out)
+                    asyncio.run_coroutine_threadsafe(
+                        self.broadcast("token_update", {
+                            "input_tokens": total_in,
+                            "output_tokens": total_out,
+                            "cost_usd": round(cost, 6),
+                        }),
+                        self._loop,
+                    )
 
         try:
             return agent.run(task, event_callback=stream_event, raw_task=raw_task)
@@ -1118,7 +1263,15 @@ class ForgeServer:
         print(f"  Fast LLM: {'available' if self.fast_llm else 'none'}")
         print(f"{'='*60}\n")
 
-        async with websockets.serve(self.handle_client, self.host, self.port):
+        async with websockets.serve(
+            self.handle_client,
+            self.host,
+            self.port,
+            ping_interval=None,   # Disable server-side pings (prevents disconnect loop)
+            ping_timeout=None,
+            close_timeout=10,
+            max_size=16 * 1024 * 1024,  # 16MB max message size
+        ):
             await asyncio.Future()  # Run forever
 
     # ── Phase 0+2: LLM-Mediated Context Resolution ──────────────

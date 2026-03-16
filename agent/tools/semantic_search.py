@@ -1,80 +1,25 @@
 """
 Proton9 — Semantic Search Tool
 
-Uses Gemini's text embedding model for semantic code search.
-Builds an in-memory index on first use, then finds semantically similar code.
+Uses Gemini's text embedding model + persistent SQLite vector index
+for semantic code search across entire codebases.
+
+Features:
+- Persistent index: survives restarts, no re-indexing
+- Incremental updates: only re-embeds changed files (mtime-based)
+- No file/chunk caps: indexes the entire codebase
+- Zero external deps: SQLite + Gemini embedding API
 """
 
 import os
-import json
 import time
-import math
-from pathlib import Path
 from tools.base import BaseTool, ToolResult
-
-
-# In-memory index cache (shared across tool instances)
-_index_cache = {}  # workspace_path -> {"embeddings": [...], "chunks": [...], "timestamp": ...}
-
-
-def _chunk_file(filepath, max_lines=30):
-    """Split a file into overlapping chunks for embedding."""
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-    except Exception:
-        return []
-
-    chunks = []
-    total = len(lines)
-    if total == 0:
-        return []
-
-    step = max(1, max_lines // 2)  # 50% overlap
-    for start in range(0, total, step):
-        end = min(start + max_lines, total)
-        text = "".join(lines[start:end]).strip()
-        if len(text) > 20:  # Skip tiny chunks
-            chunks.append({
-                "path": filepath,
-                "start_line": start + 1,
-                "end_line": end,
-                "text": text[:2000],  # Cap chunk size
-            })
-        if end >= total:
-            break
-
-    return chunks
-
-
-def _cosine_similarity(a, b):
-    """Compute cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
-    norm_a = math.sqrt(sum(x * x for x in a))
-    norm_b = math.sqrt(sum(x * x for x in b))
-    if norm_a == 0 or norm_b == 0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-# File extensions to index
-CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".c", ".cpp", ".h", ".hpp",
-    ".cs", ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".lua",
-    ".sh", ".bash", ".ps1", ".sql", ".html", ".css", ".json", ".yaml", ".yml",
-    ".toml", ".md", ".txt", ".xml", ".cfg", ".ini", ".env",
-}
-
-# Directories to skip
-SKIP_DIRS = {
-    "node_modules", ".git", "__pycache__", ".vscode", "venv", "env",
-    "dist", "build", "out", ".next", "target", "bin", "obj",
-}
+from tools.vector_index import VectorIndex
 
 
 class SemanticSearchTool(BaseTool):
     name = "semantic_search"
-    description = "Search the codebase using natural language. Finds semantically similar code to your query, even when exact keywords don't match. Good for finding related functionality, similar patterns, or answering 'where is X implemented?' questions."
+    description = "Search the codebase using natural language. Finds semantically similar code to your query, even when exact keywords don't match. Uses a persistent index that updates incrementally — first search may take longer as it indexes the codebase."
     parameters = {
         "type": "object",
         "properties": {
@@ -86,11 +31,15 @@ class SemanticSearchTool(BaseTool):
                 "type": "integer",
                 "description": "Number of results to return (default 5, max 10)",
             },
+            "reindex": {
+                "type": "boolean",
+                "description": "Force full re-index of the codebase (default false — incremental updates are automatic)",
+            },
         },
         "required": ["query"],
     }
 
-    def execute(self, query: str, top_k: int = 5, **kwargs) -> ToolResult:
+    def execute(self, query: str, top_k: int = 5, reindex: bool = False, **kwargs) -> ToolResult:
         try:
             from google import genai
         except ImportError:
@@ -110,58 +59,43 @@ class SemanticSearchTool(BaseTool):
 
         client = genai.Client(api_key=api_key)
 
-        # Build or reuse index
-        cache = _index_cache.get(working_dir)
-        if cache and (time.time() - cache["timestamp"]) < 300:  # 5 min cache
-            chunks = cache["chunks"]
-            embeddings = cache["embeddings"]
-        else:
-            # Collect code files
-            all_chunks = []
-            file_count = 0
-            for root, dirs, files in os.walk(working_dir):
-                dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
-                for fname in files:
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext not in CODE_EXTENSIONS:
-                        continue
-                    fpath = os.path.join(root, fname)
-                    file_chunks = _chunk_file(fpath)
-                    all_chunks.extend(file_chunks)
-                    file_count += 1
-                    if file_count >= 200:  # Cap files indexed
-                        break
-                if file_count >= 200:
-                    break
+        # Open persistent vector index
+        index = VectorIndex(working_dir)
 
-            if not all_chunks:
-                return ToolResult(success=False, output="", error="No indexable code files found")
+        if reindex:
+            index.clear()
 
-            # Cap total chunks
-            if len(all_chunks) > 500:
-                all_chunks = all_chunks[:500]
+        # Check for stale files (new/modified/deleted)
+        t0 = time.time()
+        to_index, to_delete, total_files = index.get_stale_files()
 
-            # Batch embed all chunks
-            texts = [c["text"] for c in all_chunks]
-            try:
-                # Embed in batches of 100
-                embeddings = []
+        # Remove deleted files from index
+        if to_delete:
+            index.remove_files(to_delete)
+
+        # Index new/changed files
+        index_msg = ""
+        if to_index:
+            def embed_batch(texts):
+                """Embed a batch of texts using Gemini."""
+                all_embeddings = []
                 for i in range(0, len(texts), 100):
                     batch = texts[i:i+100]
                     result = client.models.embed_content(
                         model="text-embedding-004",
                         contents=batch,
                     )
-                    embeddings.extend([e.values for e in result.embeddings])
-            except Exception as e:
-                return ToolResult(success=False, output="", error=f"Embedding failed: {str(e)[:200]}")
+                    all_embeddings.extend([e.values for e in result.embeddings])
+                return all_embeddings
 
-            chunks = all_chunks
-            _index_cache[working_dir] = {
-                "chunks": chunks,
-                "embeddings": embeddings,
-                "timestamp": time.time(),
-            }
+            new_chunks = index.index_files(to_index, embed_batch)
+            elapsed = time.time() - t0
+            index_msg = f"Indexed {len(to_index)} files ({new_chunks} chunks) in {elapsed:.1f}s. "
+            if to_delete:
+                index_msg += f"Removed {len(to_delete)} deleted files. "
+
+        # Get index stats
+        stats = index.get_stats()
 
         # Embed the query
         try:
@@ -173,23 +107,25 @@ class SemanticSearchTool(BaseTool):
         except Exception as e:
             return ToolResult(success=False, output="", error=f"Query embedding failed: {str(e)[:200]}")
 
-        # Find top-k similar chunks
-        scored = []
-        for i, emb in enumerate(embeddings):
-            sim = _cosine_similarity(query_embedding, emb)
-            scored.append((sim, i))
-        scored.sort(key=lambda x: -x[0])
-
-        results = []
-        for score, idx in scored[:top_k]:
-            chunk = chunks[idx]
-            rel_path = os.path.relpath(chunk["path"], working_dir)
-            results.append(
-                f"=== {rel_path}:{chunk['start_line']}-{chunk['end_line']} (score: {score:.3f}) ===\n{chunk['text'][:500]}"
-            )
+        # Search
+        results = index.search(query_embedding, top_k)
 
         if results:
-            header = f"Semantic search results for: \"{query}\" ({len(chunks)} chunks indexed)\n"
-            return ToolResult(success=True, output=header + "\n\n".join(results))
+            lines = []
+            for sim, file_path, start_line, end_line, text in results:
+                rel_path = os.path.relpath(file_path, working_dir)
+                lines.append(
+                    f"=== {rel_path}:{start_line}-{end_line} (score: {sim:.3f}) ===\n{text[:500]}"
+                )
+
+            header = (
+                f"{index_msg}"
+                f"Semantic search: \"{query}\" "
+                f"({stats['total_files']} files, {stats['total_chunks']} chunks indexed)\n"
+            )
+            return ToolResult(success=True, output=header + "\n\n".join(lines))
         else:
-            return ToolResult(success=True, output=f"No results found for: \"{query}\"")
+            return ToolResult(
+                success=True,
+                output=f"{index_msg}No results found for: \"{query}\" ({stats['total_files']} files indexed)"
+            )
