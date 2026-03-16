@@ -978,6 +978,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             var chatMessages = [];
             // ─── Action Feed ───
             function createActionFeed() {
+                stepCount = 0;
                 currentFeedEl = document.createElement('div');
                 currentFeedEl.className = 'action-feed-wrapper';
                 
