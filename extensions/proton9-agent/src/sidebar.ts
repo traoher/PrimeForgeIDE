@@ -325,9 +325,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         #send-btn:hover { background:var(--vscode-button-hoverBackground); }
         #stop-btn { background:#f44747; color:white; flex:1; }
         .hidden { display:none !important; }
-        #token-budget { font-size:11px; color:#4ec9b0; opacity:0.9; padding:0 6px; white-space:nowrap; font-family:var(--vscode-editor-font-family); font-variant-numeric:tabular-nums; }
-        #token-budget:empty { display:none; }
-        #token-budget.active { color:#dcdcaa; display:inline; }
+        #usage-btn { background:transparent; border:1px solid var(--vscode-widget-border, #444); color:#4ec9b0; padding:2px 6px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:4px; min-width:unset; white-space:nowrap; }
+        #usage-btn:hover { background:#4ec9b022; color:#4ec9b0; }
+        #usage-panel { display:none; position:absolute; top:36px; left:8px; right:8px; background:var(--vscode-editorWidget-background, #252526); border:1px solid var(--vscode-widget-border, #444); border-radius:6px; z-index:100; max-height:400px; overflow-y:auto; box-shadow:0 4px 16px rgba(0,0,0,0.5); padding:12px; font-size:12px; }
+        #usage-panel h3 { margin:0 0 8px; font-size:13px; color:var(--vscode-foreground); }
+        #usage-panel .period { margin-bottom:10px; }
+        #usage-panel .period-header { font-weight:600; color:#4ec9b0; font-size:12px; margin-bottom:4px; display:flex; justify-content:space-between; }
+        #usage-panel .period-header .total { color:#dcdcaa; font-weight:400; }
+        #usage-panel .model-row { display:flex; justify-content:space-between; padding:2px 0 2px 12px; color:var(--vscode-descriptionForeground); font-size:11px; border-left:2px solid #333; }
+        #usage-panel .model-row .name { color:#569cd6; }
+        #usage-panel .no-data { color:var(--vscode-descriptionForeground); font-style:italic; }
         #new-chat-btn { background:transparent; border:1px solid var(--vscode-button-background); color:var(--vscode-button-background); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:4px; min-width:unset; }
         #new-chat-btn:hover { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
         #history-btn { background:transparent; border:1px solid var(--vscode-widget-border, #444); color:var(--vscode-foreground); padding:2px 8px; font-size:11px; cursor:pointer; border-radius:3px; margin-left:2px; min-width:unset; }
@@ -345,8 +352,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 </head>
 <body>
     <div id="app">
-        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><span id="token-budget"></span><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><button id="usage-btn" title="Token Usage">📊</button><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
         <div id="history-panel"></div>
+        <div id="usage-panel"></div>
         <div id="settings-panel">
             <div class="settings-row">
                 <label for="provider-select">Provider</label>
@@ -631,7 +639,62 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 historyBtn.addEventListener('click', function() {
                     renderHistory();
                     historyPanel.classList.toggle('open');
+                    // Close usage panel if open
+                    var up = document.getElementById('usage-panel');
+                    if (up) up.style.display = 'none';
                 });
+            }
+
+            // ─── Usage Panel ───
+            window._persistentUsage = {};
+            var usageBtn = document.getElementById('usage-btn');
+            var usagePanel = document.getElementById('usage-panel');
+            if (usageBtn && usagePanel) {
+                usageBtn.addEventListener('click', function() {
+                    var isOpen = usagePanel.style.display === 'block';
+                    usagePanel.style.display = isOpen ? 'none' : 'block';
+                    if (!isOpen) renderUsagePanel();
+                    // Close other panels
+                    if (historyPanel) historyPanel.classList.remove('open');
+                });
+            }
+            function renderUsagePanel() {
+                var panel = document.getElementById('usage-panel');
+                if (!panel) return;
+                var data = window._persistentUsage || {};
+                var periods = ['day', 'week', 'month', 'year', 'lifetime'];
+                var labels = { day: '📅 Today', week: '📆 This Week', month: '🗓️ This Month', year: '📊 This Year', lifetime: '♾️ All Time' };
+                var fmtTok = function(n) { return n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n); };
+                var fmtCost = function(c) { return c < 0.01 ? '$'+c.toFixed(4) : '$'+c.toFixed(2); };
+                var html = '<h3>📊 Token Usage</h3>';
+                var hasAny = false;
+                for (var pi = 0; pi < periods.length; pi++) {
+                    var p = periods[pi];
+                    var pd = data[p];
+                    if (!pd || pd.total_tokens === 0) continue;
+                    hasAny = true;
+                    html += '<div class="period">';
+                    html += '<div class="period-header"><span>' + labels[p] + '</span>';
+                    html += '<span class="total">' + fmtTok(pd.total_tokens) + ' tok · ' + fmtCost(pd.cost_usd || 0) + ' · ' + pd.task_count + ' tasks</span></div>';
+                    var models = pd.models || {};
+                    var modelKeys = Object.keys(models);
+                    for (var mi = 0; mi < modelKeys.length; mi++) {
+                        var mk = modelKeys[mi];
+                        var md = models[mk];
+                        html += '<div class="model-row"><span class="name">' + mk + '</span>';
+                        html += '<span>' + fmtTok(md.input_tokens) + ' in / ' + fmtTok(md.output_tokens) + ' out · ' + fmtCost(md.cost_usd || 0) + ' · ' + md.task_count + ' tasks</span></div>';
+                    }
+                    html += '</div>';
+                }
+                if (!hasAny) html += '<div class="no-data">No usage recorded yet. Run a task to start tracking.</div>';
+                // Add session info
+                var sess = window._lastTokenUpdate;
+                if (sess && (sess.input + sess.output) > 0) {
+                    html += '<div class="period"><div class="period-header"><span>⚡ Current Session</span>';
+                    html += '<span class="total">' + fmtTok(sess.input + sess.output) + ' tok · ' + fmtCost(sess.cost || 0) + '</span></div>';
+                    html += '<div class="model-row"><span class="name">In: ' + fmtTok(sess.input) + '</span><span>Out: ' + fmtTok(sess.output) + '</span></div></div>';
+                }
+                panel.innerHTML = html;
             }
 
             // ─── Settings Panel ───
@@ -695,15 +758,15 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         cachedModels = msg.available_models || [];
                         populateModels(cachedModels, cModel);
                         if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
-                        var initBudget = document.getElementById('token-budget');
-                        if (initBudget) { initBudget.textContent = '$0.00 | 0 tok'; initBudget.className = 'active'; initBudget.title = 'No usage yet'; }
+                        // Store persistent usage data from SQLite
+                        if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
                         break;
                     case 'disconnected': setStatus('disconnected', 'Disconnected'); setRunning(false); break;
                     case 'task_started':
                         setRunning(true); setStatus('running', 'Running...');
                         createActionFeed();
                         eventLog.push({ type: 'action_feed_start', prompt: currentPrompt, ts: Date.now() });
-                        var tb = document.getElementById('token-budget'); if(tb){tb.textContent='';tb.className='';}
+                        var ub = document.getElementById('usage-panel'); if(ub){ub.style.display='none';}
                         break;
                     case 'action':
                         endStreaming();
@@ -716,18 +779,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'llm_token': appendStream(msg.text || ''); streamBuffer += (msg.text || ''); break;
                     case 'token_update':
-                        var budgetEl = document.getElementById('token-budget');
-                        if (budgetEl) {
-                            var inT = msg.input_tokens || 0;
-                            var outT = msg.output_tokens || 0;
-                            var totalT = inT + outT;
-                            var costVal = msg.cost_usd || 0;
-                            var fmtTok = function(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'K' : String(n); };
-                            var fmtCost = costVal < 0.01 ? '$' + costVal.toFixed(4) : '$' + costVal.toFixed(2);
-                            budgetEl.textContent = fmtCost + ' | ' + fmtTok(totalT) + ' tok';
-                            budgetEl.className = 'active';
-                            budgetEl.title = 'Input: ' + fmtTok(inT) + ' | Output: ' + fmtTok(outT) + ' | Cost: ' + fmtCost;
-                        }
+                        // Store silently — shown in Usage panel on demand
+                        window._lastTokenUpdate = { input: msg.input_tokens||0, output: msg.output_tokens||0, cost: msg.cost_usd||0 };
                         break;
                     case 'task_complete':
                         endStreaming();
@@ -736,6 +789,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         var taskResult = msg.result || {};
                         finalizeActionFeed(taskResult);
                         eventLog.push({ type: 'action_feed_end', result: { summary: taskResult.summary, files_changed: taskResult.files_changed, actions: (taskResult.actions || []).map(function(a) { return { step: a.step, success: a.success }; }) }, ts: Date.now() });
+                        // Refresh persistent usage from task_complete broadcast
+                        if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
                         // Save the full agent response as a message
                         var summary = taskResult.summary || '';
                         var responseText = streamBuffer || summary || '(no response)';

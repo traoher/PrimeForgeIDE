@@ -77,6 +77,16 @@ class ForgeServer:
         self.stop_requested: bool = False
         # Cumulative token/cost tracker (persists across tasks in session)
         self._session_tokens = {"input": 0, "output": 0, "cost": 0.0, "chars": 0}
+        # Hydrate from today's SQLite totals so header doesn't reset on restart
+        if self.memory_enabled and self.memory:
+            try:
+                usage = self.memory.get_token_usage_summary()
+                day_data = usage.get("day", {})
+                self._session_tokens["input"] = day_data.get("input_tokens", 0)
+                self._session_tokens["output"] = day_data.get("output_tokens", 0)
+                self._session_tokens["cost"] = day_data.get("cost_usd", 0)
+            except Exception:
+                pass
 
         # Pricing manager
         self.pricing = None
@@ -249,6 +259,7 @@ class ForgeServer:
             "available_models": self.available_models,
             "pricing": self.pricing.get_pricing() if self.pricing else {},
             "cumulative_usage": self._get_cumulative_usage(),
+            "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
         }, default=str))
 
         try:
@@ -1041,9 +1052,27 @@ class ForgeServer:
                 "cost_usd": round(self._session_tokens["cost"], 6),
             })
 
+            # Record to SQLite for persistent per-model tracking
+            if self.memory_enabled and self.memory:
+                provider = self.config.get("llm", {}).get("provider", "unknown")
+                model = self.config.get("llm", {}).get("model", "unknown")
+                summary = (result or {}).get("summary", "") or ""
+                steps = len((result or {}).get("actions", []))
+                self.memory.record_token_usage(
+                    provider=provider,
+                    model=model,
+                    input_tokens=final_in,
+                    output_tokens=final_out,
+                    cost_usd=final_cost,
+                    session_id=session_key,
+                    task_summary=summary,
+                    steps=steps,
+                )
+
             await self.broadcast("task_complete", {
                 "result": result,
                 "cumulative_usage": self._get_cumulative_usage(),
+                "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
             })
         except Exception as e:
             self.context.record_result(

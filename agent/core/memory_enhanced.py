@@ -134,6 +134,22 @@ class EnhancedMemory(QuantumMemory):
             self._fts5_available = True
         except Exception:
             self._fts5_available = False
+        # Token Usage Tracking: Persistent per-model usage with time rollups
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS TokenUsage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL DEFAULT 0,
+                session_id TEXT,
+                task_summary TEXT,
+                duration_seconds REAL DEFAULT 0,
+                steps INTEGER DEFAULT 0
+            )
+        """)
 
         conn.commit()
         conn.close()
@@ -153,6 +169,93 @@ class EnhancedMemory(QuantumMemory):
             print(f"  [MEMORY] Deleted session data for {session_id}")
         except Exception as e:
             print(f"  [MEMORY] Error deleting session {session_id}: {e}")
+        finally:
+            conn.close()
+
+    def record_token_usage(self, provider: str, model: str, input_tokens: int,
+                           output_tokens: int, cost_usd: float = 0,
+                           session_id: str = "", task_summary: str = "",
+                           duration_seconds: float = 0, steps: int = 0):
+        """Record token usage for a completed task."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                INSERT INTO TokenUsage
+                    (timestamp, provider, model, input_tokens, output_tokens,
+                     cost_usd, session_id, task_summary, duration_seconds, steps)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now().isoformat(),
+                provider, model, input_tokens, output_tokens,
+                cost_usd, session_id, task_summary[:500] if task_summary else "",
+                duration_seconds, steps,
+            ))
+            conn.commit()
+            print(f"  [USAGE] Recorded {input_tokens} in / {output_tokens} out for {provider}/{model}")
+        except Exception as e:
+            print(f"  [USAGE] Record failed: {e}")
+        finally:
+            conn.close()
+
+    def get_token_usage_summary(self) -> dict:
+        """Get cumulative token usage with time-based rollups and per-model breakdown."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            result = {}
+            # Time periods: session-all, day, week, month, year, lifetime
+            periods = {
+                "day": "datetime('now', '-1 day')",
+                "week": "datetime('now', '-7 days')",
+                "month": "datetime('now', '-30 days')",
+                "year": "datetime('now', '-365 days')",
+                "lifetime": "'1970-01-01'",
+            }
+            for period_name, since_expr in periods.items():
+                # Total for this period
+                cursor.execute(f"""
+                    SELECT COALESCE(SUM(input_tokens), 0),
+                           COALESCE(SUM(output_tokens), 0),
+                           COALESCE(SUM(cost_usd), 0),
+                           COUNT(*)
+                    FROM TokenUsage
+                    WHERE timestamp >= {since_expr}
+                """)
+                row = cursor.fetchone()
+                period_data = {
+                    "input_tokens": row[0],
+                    "output_tokens": row[1],
+                    "total_tokens": row[0] + row[1],
+                    "cost_usd": round(row[2], 6),
+                    "task_count": row[3],
+                    "models": {},
+                }
+                # Per-model breakdown for this period
+                cursor.execute(f"""
+                    SELECT provider, model,
+                           COALESCE(SUM(input_tokens), 0),
+                           COALESCE(SUM(output_tokens), 0),
+                           COALESCE(SUM(cost_usd), 0),
+                           COUNT(*)
+                    FROM TokenUsage
+                    WHERE timestamp >= {since_expr}
+                    GROUP BY provider, model
+                    ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+                """)
+                for mrow in cursor.fetchall():
+                    key = f"{mrow[0]}/{mrow[1]}"
+                    period_data["models"][key] = {
+                        "input_tokens": mrow[2],
+                        "output_tokens": mrow[3],
+                        "cost_usd": round(mrow[4], 6),
+                        "task_count": mrow[5],
+                    }
+                result[period_name] = period_data
+            return result
+        except Exception as e:
+            print(f"  [USAGE] Summary query failed: {e}")
+            return {}
         finally:
             conn.close()
 
