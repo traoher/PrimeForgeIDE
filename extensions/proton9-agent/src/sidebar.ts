@@ -898,7 +898,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             }
 
             function addFileChangeCard(filePath, diff, tool, snapshot, isNew) {
-                if (filePath) fileSnapshots[filePath] = snapshot;
+                if (filePath && typeof fileSnapshots !== 'undefined' && fileSnapshots) fileSnapshots[filePath] = snapshot;
                 var card = document.createElement('div');
                 card.className = 'diff-card';
                 card.setAttribute('data-path', filePath || '');
