@@ -668,6 +668,99 @@ class ForgeServer:
             }))
             return
 
+        # ─── Intent Classification (LLM decides, not us) ───
+        if self.fast_llm and not task_text.strip().startswith("/"):
+            try:
+                classify_resp = self.fast_llm.call(
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "Classify this user prompt into exactly one category.\n"
+                            "Reply with ONLY the single word, nothing else.\n\n"
+                            "CONVERSATION — greetings, casual chat, general knowledge, "
+                            "simple math, opinions, anything NOT requiring "
+                            "reading/writing files, running code, or using tools\n"
+                            "AGENT — coding tasks, file operations, debugging, project work, "
+                            "anything that needs tools or file system access\n\n"
+                            f"Prompt: {task_text.strip()[:500]}\n\nCategory:"
+                        ),
+                    }],
+                    tools=None,
+                )
+                intent = (classify_resp.text or "").strip().upper()
+                print(f"  [INTENT] Classified as: {intent}")
+
+                if "CONVERSATION" in intent:
+                    print(f"  [INTENT] Short-circuit — answering directly")
+                    await self.broadcast("task_started", {"task": task_text})
+
+                    import time as _time
+                    t0 = _time.time()
+
+                    conv_resp = self.fast_llm.call(
+                        messages=[{"role": "user", "content": task_text}],
+                        tools=None,
+                    )
+                    answer = (conv_resp.text or "").strip()
+                    elapsed = _time.time() - t0
+
+                    # Extract token usage from response
+                    usage = getattr(conv_resp, "usage", {}) or {}
+                    if isinstance(usage, dict):
+                        in_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0
+                        out_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0
+                    else:
+                        in_tok = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0
+                        out_tok = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0
+
+                    # Stream answer to sidebar
+                    await self.broadcast("llm_token", {"text": answer})
+
+                    # Record to conversation context
+                    self.context.record_result(
+                        session_key=session_key,
+                        user_prompt=task_text,
+                        result={"summary": answer, "actions": [], "files_changed": []},
+                    )
+
+                    # Accumulate session tokens
+                    self._session_tokens["input"] += in_tok
+                    self._session_tokens["output"] += out_tok
+
+                    # Record to SQLite
+                    if self.memory_enabled and self.memory:
+                        provider = self.config.get("llm", {}).get("provider", "unknown")
+                        model = self.config.get("llm", {}).get("model", "unknown")
+                        self.memory.record_token_usage(
+                            provider=provider, model=model,
+                            input_tokens=in_tok, output_tokens=out_tok,
+                            session_id=session_key,
+                            task_summary=f"[CONV] {task_text[:200]}",
+                        )
+
+                    await self.broadcast("token_update", {
+                        "input_tokens": self._session_tokens["input"],
+                        "output_tokens": self._session_tokens["output"],
+                        "cost_usd": round(self._session_tokens["cost"], 6),
+                    })
+
+                    await self.broadcast("task_complete", {
+                        "result": {
+                            "summary": answer,
+                            "actions": [],
+                            "files_changed": [],
+                            "usage": {"total_input_tokens": in_tok, "total_output_tokens": out_tok},
+                            "elapsed": round(elapsed, 1),
+                        },
+                        "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+                    })
+                    print(f"  [INTENT] Done ({in_tok} in / {out_tok} out, {elapsed:.1f}s)")
+                    return  # Skip full agent pipeline
+
+            except Exception as e:
+                print(f"  [INTENT] Classification error (non-fatal): {e}")
+                # Fall through to full agent pipeline
+
         contextual_task = self.context.build_contextual_task(
             session_key=session_key,
             user_prompt=task_text,
