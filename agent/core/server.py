@@ -419,6 +419,15 @@ class ForgeServer:
         elif msg_type == "run_multi":
             # Multi-agent parallel execution
             asyncio.ensure_future(self._handle_multi_agent(data, websocket))
+        elif msg_type == "diagnostics_update":
+            # Live lint feedback: IDE sends fresh diagnostics after agent edits a file
+            diag_path = data.get("path", "")
+            diag_list = data.get("diagnostics", [])
+            if self.agent and diag_list:
+                if not hasattr(self.agent, '_pending_diagnostics'):
+                    self.agent._pending_diagnostics = []
+                self.agent._pending_diagnostics.extend(diag_list)
+                print(f"  [LINT] Received {len(diag_list)} live diagnostics for {diag_path}")
         else:
             await websocket.send(json.dumps({
                 "type": "error", "message": f"Unknown message type: {msg_type}"
@@ -502,7 +511,7 @@ class ForgeServer:
         """Handle multi-agent parallel execution."""
         task = (data.get("task") or "").strip()
         working_dir = (data.get("working_dir") or "").strip() or self.workspace_dir or "."
-        max_agents = min(int(data.get("max_agents", 4) or 4), 4)
+        max_agents = min(int(data.get("max_agents", 4) or 4), 8)
 
         if not task:
             await websocket.send(json.dumps({"type": "error", "message": "No task provided"}))
@@ -830,6 +839,20 @@ class ForgeServer:
                 af_section += f"Surrounding code (lines around cursor):\n```{af_lang}\n{af_surround}\n```\n"
             collapsed_context = (collapsed_context + af_section) if collapsed_context else af_section
             print(f"  [CONTEXT] Active file: {af_path} (line {af_line}, {af_lang})")
+
+        # Inject workspace rules (.proton9/rules.md)
+        ws_path = working_dir or self.workspace_dir or "."
+        rules_path = os.path.join(ws_path, ".proton9", "rules.md")
+        if os.path.exists(rules_path):
+            try:
+                with open(rules_path, "r", encoding="utf-8") as f:
+                    rules_text = f.read().strip()[:5000]
+                if rules_text:
+                    rules_section = "\n## Workspace Rules (FOLLOW STRICTLY)\n" + rules_text + "\n"
+                    collapsed_context = (collapsed_context + rules_section) if collapsed_context else rules_section
+                    print(f"  [RULES] Loaded {len(rules_text)} chars from .proton9/rules.md")
+            except Exception as e:
+                print(f"  [RULES] Failed to read rules.md: {e}")
 
         # Inject IDE diagnostics (lint errors, warnings) into context
         diagnostics = data.get("diagnostics") or []
@@ -1196,6 +1219,8 @@ class ForgeServer:
 
         # Inject collapsed context into agent (for system prompt enrichment)
         agent._collapsed_context = collapsed_context
+        # Inject fast_llm into agent for context compaction (summarization)
+        agent._fast_llm = self.fast_llm
 
         # Connect to MCP servers (if configured) and register their tools
         mcp_clients = []

@@ -200,6 +200,7 @@ class Agent(PlannerMixin, RemediationMixin):
         self.max_readonly_streak = int(agent_cfg.get("max_readonly_streak", 8) or 8)
         self.max_replans = int(agent_cfg.get("max_replans", 2) or 2)
         self.context_char_budget = int(agent_cfg.get("context_char_budget", 120_000) or 120_000)
+        self.context_compaction = bool(agent_cfg.get("context_compaction", True))
         self.critic_skip_threshold = int(agent_cfg.get("critic_skip_threshold", 3) or 3)
         self.max_task_chars = int(agent_cfg.get("max_task_chars", 4000) or 4000)
         self.exit_on_first_successful_verification = bool(
@@ -584,6 +585,26 @@ class Agent(PlannerMixin, RemediationMixin):
 
                 # Call LLM
                 print(f"  [{step}] Thinking...", end="", flush=True)
+
+                # Live lint feedback: inject any pending diagnostics from IDE
+                pending_diags = getattr(self, '_pending_diagnostics', [])
+                if pending_diags:
+                    diag_lines = []
+                    for d in pending_diags[:20]:  # Cap at 20
+                        sev = d.get("severity", "error").upper()
+                        path = d.get("path", "")
+                        line = d.get("line", 0)
+                        msg = d.get("message", "")
+                        src = d.get("source", "")
+                        diag_lines.append(f"  [{sev}] {path}:{line} — {msg}" + (f" ({src})" if src else ""))
+                    diag_msg = (
+                        "⚠️ Your recent edit introduced lint errors. Fix these before proceeding:\n"
+                        + "\n".join(diag_lines)
+                    )
+                    self.messages.append({"role": "system", "content": diag_msg})
+                    self._cached_message_chars += len(diag_msg)
+                    self._pending_diagnostics = []
+                    print(f"  [LINT] Injected {len(diag_lines)} diagnostics into context")
 
                 # Performance Fix 1: Incremental char counting — O(1) amortized instead of O(n) per iteration
                 if not hasattr(self, '_cached_message_chars') or self._cached_message_chars < 0:
@@ -1446,40 +1467,81 @@ class Agent(PlannerMixin, RemediationMixin):
 
     def _prune_context(self, messages: list[dict], char_budget: int = 120_000) -> list[dict]:
         """
-        Token-aware context window pruning (Feature H).
+        Smart context compaction (upgraded from dumb pruning).
 
-        Strategy:
-        - Always keep message[0] (system prompt)
-        - Always keep error/remediation messages (they're critical)
-        - Keep the most recent messages
-        - Drop old non-error messages from the middle until under budget
-        
-        Uses LLM gateway's count_tokens for provider-accurate estimation.
+        When context_compaction is ON (default):
+        - Summarize old messages into a RECAP via fast_llm
+        - Keep system prompt + recap + last 6 messages
+        - LLM retains ALL knowledge in compressed form
+
+        When context_compaction is OFF:
+        - No pruning at all — send full context (may hit model limit)
         """
-        # Convert char_budget to token budget if caller passes a large char value.
-        # Production caller passes 120_000 chars → 30_000+ tokens.
-        # Tests may pass small values (20_000) as char budgets → keep as-is but
-        # use consistent counting.
-        if char_budget > 50_000 and hasattr(self, "llm") and hasattr(self.llm, "count_tokens"):
-            # Use provider-accurate ratio
-            ratio = getattr(self.llm, "_CHARS_PER_TOKEN", {}).get(
-                getattr(self.llm, "provider_name", ""), 3.5
-            )
-            token_budget = int(char_budget / ratio)
-        else:
-            # Small budgets or no LLM: treat char_budget as-is with chars
-            token_budget = char_budget
-
-        def _msg_tokens(msg: dict) -> int:
-            content = msg.get("content", "")
-            if char_budget > 50_000 and hasattr(self, "llm") and hasattr(self.llm, "count_tokens"):
-                return self.llm.count_tokens(content)
-            return len(content)  # fallback: treat as chars
-
-        total_tokens = sum(_msg_tokens(m) for m in messages)
-        if total_tokens <= token_budget:
+        if not getattr(self, 'context_compaction', True):
+            # User disabled compaction — send full context, let the LLM handle it
             return messages
 
+        # Estimate total size
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        if total_chars <= char_budget:
+            return messages
+
+        # Keep system prompt (first) and last 6 messages (recent working memory)
+        keep_tail = min(6, len(messages) - 1)
+        head = [messages[0]]
+        tail = messages[-keep_tail:] if keep_tail > 0 else []
+        middle = messages[1:-keep_tail] if keep_tail > 0 else messages[1:]
+
+        if not middle:
+            return messages  # Nothing to compact
+
+        # Try smart compaction via fast_llm
+        fast_llm = getattr(self, '_fast_llm', None)
+        if fast_llm:
+            try:
+                # Build a summary of what happened in the middle messages
+                middle_text = ""
+                for m in middle:
+                    role = m.get("role", "unknown")
+                    content = m.get("content", "")[:800]  # Cap each message
+                    middle_text += f"[{role}]: {content}\n---\n"
+                middle_text = middle_text[:8000]  # Cap total
+
+                compact_resp = fast_llm.call(
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            "Summarize this agent conversation history into a concise recap.\n"
+                            "Include: what tools were called, what files were changed, "
+                            "what worked, what failed, key decisions made.\n"
+                            "Be concise but preserve ALL important facts.\n"
+                            "Output ONLY the recap, no preamble.\n\n"
+                            f"{middle_text}"
+                        ),
+                    }],
+                    tools=None,
+                )
+                recap = (compact_resp.text or "").strip()
+                if recap:
+                    recap_msg = {
+                        "role": "system",
+                        "content": (
+                            f"## CONTEXT RECAP (compacted from {len(middle)} earlier messages)\n"
+                            f"{recap}"
+                        ),
+                    }
+                    compacted = head + [recap_msg] + tail
+                    new_chars = sum(len(m.get("content", "")) for m in compacted)
+                    print(
+                        f"  [COMPACT] Summarized {len(middle)} messages via fast_llm "
+                        f"({total_chars // 1000}K → {new_chars // 1000}K chars)",
+                        flush=True,
+                    )
+                    return compacted
+            except Exception as e:
+                print(f"  [COMPACT] fast_llm summarization failed: {e}")
+
+        # Fallback: dumb pruning (drop old non-error messages)
         important_keywords = {
             "error", "fail", "traceback", "exception", "syntax",
             "remediat", "auto-test", "must fix", "reverted",
@@ -1489,29 +1551,20 @@ class Agent(PlannerMixin, RemediationMixin):
             content = msg.get("content", "").lower()
             return any(kw in content for kw in important_keywords)
 
-        # Always keep first message (system prompt) and last 10 messages
-        keep_tail = min(10, len(messages) - 1)
-        head = [messages[0]]
-        tail = messages[-keep_tail:] if keep_tail > 0 else []
-        middle = messages[1:-keep_tail] if keep_tail > 0 else messages[1:]
-
-        # Keep important middle messages, drop the rest from oldest first
         kept_middle = [m for m in middle if is_important(m)]
-
         pruned = head + kept_middle + tail
-        pruned_tokens = sum(_msg_tokens(m) for m in pruned)
+        pruned_chars = sum(len(m.get("content", "")) for m in pruned)
 
-        # If still over budget, trim kept_middle from the oldest
-        while pruned_tokens > token_budget and kept_middle:
+        while pruned_chars > char_budget and kept_middle:
             removed = kept_middle.pop(0)
-            pruned_tokens -= _msg_tokens(removed)
+            pruned_chars -= len(removed.get("content", ""))
             pruned = head + kept_middle + tail
 
         dropped = len(messages) - len(pruned)
         if dropped > 0:
             print(
-                f"  [CONTEXT] Pruned {dropped} messages "
-                f"({total_tokens//1000}K → {pruned_tokens//1000}K tokens)",
+                f"  [COMPACT] Fallback prune: dropped {dropped} messages "
+                f"({total_chars // 1000}K → {pruned_chars // 1000}K chars)",
                 flush=True,
             )
         return pruned

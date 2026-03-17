@@ -134,6 +134,38 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 case 'query_models':
                     this.forge.queryModels(msg.provider || '');
                     break;
+                case 'request_diagnostics': {
+                    // Live lint feedback: fetch diagnostics for a specific file after agent edits it
+                    const diagPath = msg.path || '';
+                    if (diagPath) {
+                        // Wait 1.5s for VS Code linter to re-analyze
+                        setTimeout(() => {
+                            try {
+                                const uri = vscode.Uri.file(diagPath);
+                                const fileDiags = vscode.languages.getDiagnostics(uri);
+                                const errors: { path: string; line: number; severity: string; message: string; source: string }[] = [];
+                                for (const d of fileDiags) {
+                                    if (d.severity <= vscode.DiagnosticSeverity.Warning) {
+                                        errors.push({
+                                            path: diagPath,
+                                            line: d.range.start.line + 1,
+                                            severity: d.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning',
+                                            message: d.message,
+                                            source: d.source || '',
+                                        });
+                                    }
+                                }
+                                if (errors.length > 0) {
+                                    console.log(`[Proton9] Live lint: ${errors.length} issues in ${diagPath}`);
+                                    this.forge.sendDiagnosticsUpdate(diagPath, errors);
+                                }
+                            } catch (e) {
+                                console.log('[Proton9] Live lint fetch failed:', e);
+                            }
+                        }, 1500);
+                    }
+                    break;
+                }
                 case 'save_chat': {
                     // Persist chat session to file in .proton9/chats/
                     const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -826,6 +858,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         eventLog.push({ type: 'file_changed', path: msg.path, diff: (msg.diff || '').substring(0, 1000), tool: msg.tool, snapshot: null, is_new: msg.is_new, ts: Date.now() });
                         // Also open the file in the editor
                         vscode.postMessage({ type: 'open_file', path: msg.path });
+                        // Request fresh diagnostics after file change (lint feedback loop)
+                        vscode.postMessage({ type: 'request_diagnostics', path: msg.path });
                         break;
                     case 'file_reverted':
                         // Mark the diff card as reverted

@@ -26,6 +26,7 @@ agent:
   max_readonly_streak: 8
   max_replans: 2
   context_char_budget: 120000
+  context_compaction: true
   critic_skip_threshold: 3
   max_task_chars: 4000
   exit_on_first_successful_verification: true

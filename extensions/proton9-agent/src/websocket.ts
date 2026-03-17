@@ -104,6 +104,10 @@ export class ForgeWebSocket {
         this.send({ type: 'query_models', provider });
     }
 
+    sendDiagnosticsUpdate(path: string, diagnostics: object[]): void {
+        this.send({ type: 'diagnostics_update', path, diagnostics });
+    }
+
     dispose(): void {
         this.cleanup();
         if (this.reconnectTimer) {
