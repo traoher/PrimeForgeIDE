@@ -346,6 +346,32 @@ class EnhancedMemory(QuantumMemory):
         conn.commit()
         conn.close()
 
+    def get_last_session(self) -> dict | None:
+        """Get the most recent session summary for 'Continue My Work' feature."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            cursor.execute("""
+                SELECT session_id, objective, outcome, summary_text, created_at
+                FROM SessionSummaries
+                ORDER BY created_at DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "session_id": row[0],
+                    "objective": row[1],
+                    "outcome": row[2],
+                    "summary": row[3],
+                    "timestamp": row[4],
+                }
+        except Exception:
+            pass
+        finally:
+            conn.close()
+        return None
+
     def get_relevant_memories(self, query_text: str, limit: int = 5) -> str:
         """
         Retrieve relevant past experiences using FTS5 MATCH (BM25 ranked).

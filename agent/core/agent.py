@@ -1091,26 +1091,33 @@ class Agent(PlannerMixin, RemediationMixin):
                 self.messages.append({"role": "assistant", "content": f"Calling {tool_name}({json.dumps(tool_args, default=str)[:500]})"})
                 self.messages.append({"role": "user", "content": result_text})
 
+                # Checkpoint: save state after each step for long-running resilience
+                self._save_checkpoint(session_id, task, step)
+
                 # A3: Removed dumb trim — _prune_context at L640 handles this intelligently
                 # (It preserves system prompt and uses char budget instead of arbitrary message count)
 
             except SafetyError as e:
                 print(f"\n  🛑 SAFETY STOP: {e}")
                 final_summary = f"Task stopped by safety rails: {e}"
+                self._save_checkpoint(session_id, task, step)  # Preserve state for resume
                 break
             except TaskCancelled as e:
                 print(f"\n  ⏹️  CANCELLED: {e}")
                 final_summary = str(e)
+                self._save_checkpoint(session_id, task, step)
                 break
             except KeyboardInterrupt:
                 print(f"\n  ⏸️  Paused by user (Ctrl+C)")
                 final_summary = "Task paused by user."
+                self._save_checkpoint(session_id, task, step)
                 break
             except Exception as e:
                 import traceback
                 print(f"\n  ❌ Agent error: {e}")
                 traceback.print_exc()
                 final_summary = f"Agent error: {e}"
+                self._save_checkpoint(session_id, task, step)
                 break
 
         # ─── Critic Review + Auto-Fix Loop ───
@@ -1248,6 +1255,10 @@ class Agent(PlannerMixin, RemediationMixin):
 
         # Final report
         usage = self.llm.get_usage_summary()
+        # Clear checkpoint on successful completion
+        if task_complete:
+            Agent.clear_checkpoint(self.working_dir)
+
         report = {
             "summary": final_summary,
             "task_complete": task_complete,
@@ -1630,6 +1641,52 @@ class Agent(PlannerMixin, RemediationMixin):
             print("  [GIT] Checkpoint skipped (timeout)")
         except Exception as e:
             print(f"  [GIT] Checkpoint skipped: {e}")
+
+    def _save_checkpoint(self, session_id: str, task: str, step: int):
+        """Save agent state checkpoint for long-running resilience."""
+        try:
+            cp_dir = os.path.join(self.working_dir, ".proton9", "checkpoints")
+            os.makedirs(cp_dir, exist_ok=True)
+            cp_path = os.path.join(cp_dir, "latest.json")
+
+            # Keep only last 20 messages to avoid huge checkpoint files
+            checkpoint = {
+                "session_id": session_id,
+                "task": task[:2000],
+                "step": step,
+                "messages": self.messages[-20:],
+                "files_changed": list(self.log.files_changed),
+                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            with open(cp_path, "w", encoding="utf-8") as f:
+                json.dump(checkpoint, f, default=str)
+        except Exception:
+            pass  # Non-fatal — don't let checkpoint errors break the agent
+
+    @staticmethod
+    def load_checkpoint(working_dir: str) -> dict | None:
+        """Load the latest checkpoint if available."""
+        cp_path = os.path.join(working_dir, ".proton9", "checkpoints", "latest.json")
+        if os.path.exists(cp_path):
+            try:
+                with open(cp_path, "r", encoding="utf-8") as f:
+                    cp = json.load(f)
+                print(f"  [CHECKPOINT] Loaded: step {cp.get('step', '?')}, {len(cp.get('messages', []))} messages")
+                return cp
+            except Exception as e:
+                print(f"  [CHECKPOINT] Failed to load: {e}")
+        return None
+
+    @staticmethod
+    def clear_checkpoint(working_dir: str):
+        """Remove checkpoint after successful task completion."""
+        cp_path = os.path.join(working_dir, ".proton9", "checkpoints", "latest.json")
+        try:
+            if os.path.exists(cp_path):
+                os.remove(cp_path)
+                print("  [CHECKPOINT] Cleared (task complete)")
+        except Exception:
+            pass
 
     def _discover_rule_sources(self) -> list[str]:
         """Discover Proton9-native policy files that should be considered preloaded."""

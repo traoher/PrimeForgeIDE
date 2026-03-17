@@ -249,6 +249,14 @@ class ForgeServer:
         print(f"  [WS] Client connected ({len(self.clients)} total)")
 
         llm_cfg = self.config.get("llm", {})
+        # Get last session for "Continue My Work" feature
+        last_session = None
+        if self.memory_enabled and self.memory:
+            try:
+                last_session = self.memory.get_last_session()
+            except Exception:
+                pass
+
         await websocket.send(json.dumps({
             "type": "connected",
             "message": "Proton9 server ready",
@@ -260,6 +268,7 @@ class ForgeServer:
             "pricing": self.pricing.get_pricing() if self.pricing else {},
             "cumulative_usage": self._get_cumulative_usage(),
             "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+            "last_session": last_session,
         }, default=str))
 
         try:
@@ -428,6 +437,28 @@ class ForgeServer:
                     self.agent._pending_diagnostics = []
                 self.agent._pending_diagnostics.extend(diag_list)
                 print(f"  [LINT] Received {len(diag_list)} live diagnostics for {diag_path}")
+        elif msg_type == "resume_task":
+            # Resume from checkpoint: load saved state and inject as context
+            working_dir = (data.get("working_dir") or "").strip() or self.workspace_dir or "."
+            from core.agent import Agent as AgentClass
+            checkpoint = AgentClass.load_checkpoint(working_dir)
+            if checkpoint:
+                # Build a resume task with checkpoint context
+                resume_context = (
+                    f"RESUMING from checkpoint (step {checkpoint.get('step', '?')}).\n"
+                    f"Previous task: {checkpoint.get('task', '')}\n"
+                    f"Files already changed: {', '.join(checkpoint.get('files_changed', []))}\n"
+                    f"Continue where you left off. Do NOT repeat work already done.\n"
+                )
+                task = data.get("task", "") or checkpoint.get("task", "")
+                data["task"] = resume_context + "\n" + task
+                data["working_dir"] = working_dir
+                print(f"  [RESUME] Resuming from step {checkpoint.get('step', '?')}")
+                await self.handle_message({"type": "run_task", **data}, websocket)
+            else:
+                await websocket.send(json.dumps({
+                    "type": "error", "message": "No checkpoint found to resume from."
+                }))
         else:
             await websocket.send(json.dumps({
                 "type": "error", "message": f"Unknown message type: {msg_type}"

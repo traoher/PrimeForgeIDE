@@ -792,6 +792,41 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
                         // Store persistent usage data from SQLite
                         if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
+                        // "Continue My Work" — show last session card if available
+                        if (msg.last_session && msg.last_session.objective) {
+                            var ls = msg.last_session;
+                            var timeAgo = '';
+                            try {
+                                var diff = Date.now() - new Date(ls.timestamp).getTime();
+                                var mins = Math.floor(diff / 60000);
+                                if (mins < 60) { timeAgo = mins + 'm ago'; }
+                                else if (mins < 1440) { timeAgo = Math.floor(mins/60) + 'h ago'; }
+                                else { timeAgo = Math.floor(mins/1440) + 'd ago'; }
+                            } catch(e) { timeAgo = ''; }
+                            var card = document.createElement('div');
+                            card.className = 'continue-card';
+                            card.innerHTML = '<div style="padding:10px;background:var(--vscode-editor-background);border:1px solid var(--vscode-focusBorder);border-radius:6px;margin:8px 0;">'
+                                + '<div style="font-size:12px;color:var(--vscode-descriptionForeground);margin-bottom:4px;">📋 Last session' + (timeAgo ? ' (' + timeAgo + ')' : '') + '</div>'
+                                + '<div style="font-size:13px;margin-bottom:8px;">' + (ls.objective || '').substring(0, 120) + '</div>'
+                                + '<div style="display:flex;gap:8px;">'
+                                + '<button id="continue-btn" style="flex:1;padding:6px 12px;background:var(--vscode-button-background);color:var(--vscode-button-foreground);border:none;border-radius:4px;cursor:pointer;font-size:12px;">▶ Continue</button>'
+                                + '<button id="dismiss-btn" style="padding:6px 12px;background:transparent;color:var(--vscode-descriptionForeground);border:1px solid var(--vscode-widget-border);border-radius:4px;cursor:pointer;font-size:12px;">✕</button>'
+                                + '</div></div>';
+                            chatEl.appendChild(card);
+                            chatEl.scrollTop = chatEl.scrollHeight;
+                            var contBtn = document.getElementById('continue-btn');
+                            var disBtn = document.getElementById('dismiss-btn');
+                            if (contBtn) {
+                                contBtn.addEventListener('click', function() {
+                                    inputEl.value = 'Continue my previous task: ' + (ls.objective || '').substring(0, 200);
+                                    card.remove();
+                                    inputEl.focus();
+                                });
+                            }
+                            if (disBtn) {
+                                disBtn.addEventListener('click', function() { card.remove(); });
+                            }
+                        }
                         break;
                     case 'disconnected': setStatus('disconnected', 'Disconnected'); setRunning(false); break;
                     case 'task_started':
