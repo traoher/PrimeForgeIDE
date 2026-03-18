@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-03-18T11:29:02.951109",
+  "updated_at": "2026-03-18T10:04:14.991847",
   "day": {
     "2026-03-14": {
       "_total": {
@@ -92,14 +92,14 @@
     },
     "2026-03-18": {
       "_total": {
-        "input_tokens": 89221,
-        "output_tokens": 12733,
-        "calls": 101
+        "input_tokens": 89016,
+        "output_tokens": 12130,
+        "calls": 97
       },
       "deepseek-chat": {
-        "input_tokens": 88778,
-        "output_tokens": 9058,
-        "calls": 89
+        "input_tokens": 88573,
+        "output_tokens": 8455,
+        "calls": 85
       },
       "gemini-3-flash-preview": {
         "input_tokens": 162,
@@ -143,14 +143,14 @@
     },
     "2026-W12": {
       "_total": {
-        "input_tokens": 870428,
-        "output_tokens": 27382,
-        "calls": 229
+        "input_tokens": 870223,
+        "output_tokens": 26779,
+        "calls": 225
       },
       "deepseek-chat": {
-        "input_tokens": 474278,
-        "output_tokens": 17338,
-        "calls": 151
+        "input_tokens": 474073,
+        "output_tokens": 16735,
+        "calls": 147
       },
       "gemini-3.1-flash-image-preview": {
         "input_tokens": 620,
@@ -177,14 +177,14 @@
   "month": {
     "2026-03": {
       "_total": {
-        "input_tokens": 2082464,
-        "output_tokens": 48502,
-        "calls": 613
+        "input_tokens": 2082259,
+        "output_tokens": 47899,
+        "calls": 609
       },
       "deepseek-chat": {
-        "input_tokens": 1479568,
-        "output_tokens": 26837,
-        "calls": 372
+        "input_tokens": 1479363,
+        "output_tokens": 26234,
+        "calls": 368
       },
       "gemini-2.5-flash": {
         "input_tokens": 186420,
@@ -225,14 +225,14 @@
   },
   "lifetime": {
     "_total": {
-      "input_tokens": 2082464,
-      "output_tokens": 48502,
-      "calls": 613
+      "input_tokens": 2082259,
+      "output_tokens": 47899,
+      "calls": 609
     },
     "deepseek-chat": {
-      "input_tokens": 1479568,
-      "output_tokens": 26837,
-      "calls": 372
+      "input_tokens": 1479363,
+      "output_tokens": 26234,
+      "calls": 368
     },
     "gemini-2.5-flash": {
       "input_tokens": 186420,

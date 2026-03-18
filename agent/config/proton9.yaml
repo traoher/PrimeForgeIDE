@@ -1,0 +1,70 @@
+llm:
+  provider: deepseek
+  model: deepseek-chat
+  fallback_provider: deepseek
+  call_timeout_seconds: 180
+  throttle_max_wait_seconds: 45
+  transient_retries: 3
+  transient_retry_base_seconds: 1.0
+  pricing:
+    input_usd_per_million: 0.0
+    output_usd_per_million: 0.0
+memory:
+  enabled: true
+  include_wakeup_context: true
+  auto_save_state: true
+  enable_tools: true
+  stale_ensemble_days: 7
+plugins:
+  max_interactive_remediation_attempts: 10
+  max_shell_failure_remediation_attempts: 10
+agent:
+  max_non_tool_responses: 2
+  max_interactive_remediation_attempts: 2
+  max_shell_failure_remediation_attempts: 2
+  max_repeated_action_streak: 3
+  max_readonly_streak: 8
+  max_replans: 2
+  context_char_budget: 120000
+  context_compaction: true
+  critic_skip_threshold: 3
+  max_task_chars: 4000
+  exit_on_first_successful_verification: true
+  preloaded_rule_files:
+  - AGENTS.md
+  - config/proton9_policy.md
+  verification_tools:
+  - shell_exec
+  - test_run
+context:
+  enabled: true
+  char_budget: 2400
+  max_turns_per_ensemble: 50
+  max_methods_per_ensemble: 8
+  topic_shift_overlap_threshold: 0
+safety:
+  max_iterations: 50
+  max_file_size_mb: 1
+  error_loop_threshold: 3
+  command_timeout_seconds: 120
+  blocked_commands:
+  - rm -rf /
+  - 'format c:'
+  - 'format d:'
+  - 'format e:'
+  - del /s C:\
+  - del /s /q C:\
+  - rd /s /q C:\
+  - Remove-Item -Recurse -Force C:\
+  - proton9.py
+  - python proton9.py
+  - python proton9
+  - evolve.py
+  - python evolve.py
+  - python evolve
+  protected_paths:
+  - C:\Windows
+  - C:\Program Files
+  - C:\Program Files (x86)
+workspace:
+  default_dir: .
