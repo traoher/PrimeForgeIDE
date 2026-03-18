@@ -377,6 +377,13 @@ class Agent(PlannerMixin, RemediationMixin):
         # Reset per-task state
         self._cached_message_chars = -1
         self._git_checkpoint_done = False
+        # 9-Phase Engineering Loop tracker
+        self._phase = 0  # 0=not started, 1-9=active phase
+        self._phase_names = {
+            1: 'GATHER', 2: 'DEFINE', 3: 'FORMULATE', 4: 'DETAIL',
+            5: 'BUILD', 6: 'TEST', 7: 'EVALUATE', 8: 'IMPROVE', 9: 'DELIVER'
+        }
+        self._phase_artifacts = {}  # phase_num -> artifact content
 
         # ── Pre-Work: repo-map (cached) ──
         # Skip if server already provided a project structure via collapsed context
@@ -849,14 +856,28 @@ class Agent(PlannerMixin, RemediationMixin):
 
                     # Emit task_artifact event for plan/walkthrough/analysis tools
                     if tool_name == "plan" and result.success:
+                        plan_title = tool_args.get("title", "Artifact")
                         try:
                             self._event_callback("task_artifact", {
-                                "title": tool_args.get("title", "Artifact"),
+                                "title": plan_title,
                                 "content": tool_args.get("content", ""),
                                 "artifact_type": tool_args.get("artifact_type", "plan"),
                             })
                         except Exception:
                             pass
+                        # Phase tracking: detect phase from plan title (P2, P3, P4, P7)
+                        for pnum in [2, 3, 4, 7]:
+                            ptag = f"P{pnum}"
+                            if ptag in plan_title:
+                                self._phase = pnum
+                                self._phase_artifacts[pnum] = tool_args.get("content", "")
+                                pname = self._phase_names.get(pnum, '')
+                                print(f"  [PHASE] → P{pnum}: {pname}")
+                                try:
+                                    self._event_callback("phase_change", {"phase": pnum, "name": pname})
+                                except Exception:
+                                    pass
+                                break
 
                 # Check for done signal
                 if tool_name == "done":
