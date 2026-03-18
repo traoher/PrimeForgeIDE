@@ -461,7 +461,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             var eventLog = [];              // all UI events for session replay
 
             // ─── Per-Slot Container Architecture ───
-            const MAX_SLOTS = 3;
+            const MAX_SLOTS = 9;
             const agentTabs = document.getElementById('agent-tabs');
             const addSlotBtn = document.getElementById('add-slot-btn');
             const slotInfoEl = document.getElementById('slot-info');

@@ -75,7 +75,7 @@ class ForgeServer:
         self.context_enabled_default = bool(context_cfg.get("enabled", True))
         self.agent: Agent | None = None  # Legacy: points to most recent agent
         self.agent_slots: dict = {}  # slot_id → {"task": asyncio.Task, "agent": Agent|None, "stop": bool, "provider": str, "model": str, "started": float}
-        self.max_agent_slots: int = 8
+        self.max_agent_slots: int = 9
         self.current_task: asyncio.Task | None = None  # Legacy compat
         self.stop_requested: bool = False  # Legacy compat
         # Cumulative token/cost tracker (persists across tasks in session)
