@@ -230,6 +230,53 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     }, () => {});
                     break;
                 }
+                case 'save_slot_state': {
+                    // Persist per-tab chat HTML to .proton9/slots/
+                    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder && msg.slotId) {
+                        const fs = require('fs');
+                        const path = require('path');
+                        const slotsDir = path.join(wsFolder, '.proton9', 'slots');
+                        try {
+                            fs.mkdirSync(slotsDir, { recursive: true });
+                            const filepath = path.join(slotsDir, `${msg.slotId}.json`);
+                            fs.writeFileSync(filepath, JSON.stringify({
+                                slotId: msg.slotId,
+                                html: msg.html || '',
+                                provider: msg.provider || '',
+                                model: msg.model || '',
+                                inputText: msg.inputText || '',
+                                savedAt: new Date().toISOString(),
+                            }, null, 2), 'utf-8');
+                        } catch (err) {
+                            console.error('[Proton9] Slot save error:', err);
+                        }
+                    }
+                    break;
+                }
+                case 'load_slots': {
+                    // Load saved slot states and send to webview
+                    const wsFolder2 = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder2) {
+                        const fs = require('fs');
+                        const path = require('path');
+                        const slotsDir = path.join(wsFolder2, '.proton9', 'slots');
+                        const savedSlots: any[] = [];
+                        try {
+                            if (fs.existsSync(slotsDir)) {
+                                const files = fs.readdirSync(slotsDir).filter((f: string) => f.endsWith('.json'));
+                                for (const f of files) {
+                                    try {
+                                        const data = JSON.parse(fs.readFileSync(path.join(slotsDir, f), 'utf-8'));
+                                        savedSlots.push(data);
+                                    } catch { /* skip corrupt files */ }
+                                }
+                            }
+                        } catch { /* ignore */ }
+                        try { webview.postMessage({ type: 'saved_slots', slots: savedSlots }); } catch {}
+                    }
+                    break;
+                }
                 case 'webview_ready':
                 case 'get_state':
                     // Webview just loaded — re-send current connection state
@@ -451,6 +498,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
 
             // Sync state on load — request current state from extension host
             vscode.postMessage({ type: 'webview_ready' });
+            // Request saved slot states from previous session
+            vscode.postMessage({ type: 'load_slots' });
             let currentFeedEl = null;      // current Action Feed wrapper
             let currentFeedBody = null;    // its body (contains steps)
             let currentPrompt = '';        // current task prompt
@@ -1077,6 +1126,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         tcS.streamBuffer = '';
                         if (evSlot === activeSlot) { streamBuffer = ''; }
                         addCompletionCardToSlot(taskResult, evSlot);
+                        // Persist this slot's chat state
+                        saveSlotState(evSlot);
                         break;
                     }
                     case 'task_error': {
@@ -1126,6 +1177,32 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'task_artifact':
                         addArtifactCardToSlot(msg.title, msg.content, msg.artifact_type, evSlot);
+                        break;
+                    case 'saved_slots':
+                        // Restore saved tab states from previous session
+                        var savedSlots = msg.slots || [];
+                        savedSlots.forEach(function(ss) {
+                            if (!ss.slotId || ss.slotId === 'p9-1') {
+                                // Restore P9-1 content directly
+                                if (ss.slotId === 'p9-1' && ss.html) {
+                                    var p1Slot = getSlot('p9-1');
+                                    p1Slot.container.innerHTML = ss.html;
+                                    p1Slot.provider = ss.provider || '';
+                                    p1Slot.model = ss.model || '';
+                                    if (ss.inputText) slotInput['p9-1'] = ss.inputText;
+                                }
+                                return;
+                            }
+                            // Create tab and restore content
+                            var restoredCounter = parseInt(ss.slotId.replace('p9-', '')) || 0;
+                            if (restoredCounter > slotCounter) slotCounter = restoredCounter;
+                            addTab(ss.slotId, ss.provider || '', ss.model || '');
+                            var rSlot = getSlot(ss.slotId);
+                            if (ss.html) rSlot.container.innerHTML = ss.html;
+                            if (ss.inputText) slotInput[ss.slotId] = ss.inputText;
+                        });
+                        // Switch back to P9-1 after restore
+                        switchTab('p9-1');
                         break;
                 }
             });
@@ -1406,6 +1483,18 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 el.style.lineHeight = '1.6';
                 slot.container.appendChild(el);
                 if (slotId === activeSlot) scrollToBottom();
+            }
+
+            function saveSlotState(slotId) {
+                var slot = getSlot(slotId);
+                vscode.postMessage({
+                    type: 'save_slot_state',
+                    slotId: slotId,
+                    html: slot.container.innerHTML,
+                    provider: slot.provider || '',
+                    model: slot.model || '',
+                    inputText: slotInput[slotId] || '',
+                });
             }
 
             function addArtifactCardToSlot(title, content, artifactType, slotId) {
