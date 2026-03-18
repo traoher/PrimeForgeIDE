@@ -100,8 +100,8 @@ export class ForgeWebSocket {
         this.send({ type: 'set_workspace', path });
     }
 
-    setModel(provider: string, model: string): void {
-        this.send({ type: 'set_model', provider, model });
+    setModel(provider: string, model: string, slotId?: string): void {
+        this.send({ type: 'set_model', provider, model, slot_id: slotId || '' });
     }
 
     queryModels(provider: string): void {

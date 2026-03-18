@@ -129,7 +129,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     this.forge.stopTask(msg.slot_id);
                     break;
                 case 'set_model':
-                    this.forge.setModel(msg.provider || '', msg.model || '');
+                    this.forge.setModel(msg.provider || '', msg.model || '', msg.slot_id);
                     break;
                 case 'query_models':
                     this.forge.queryModels(msg.provider || '');
@@ -230,13 +230,31 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     }, () => {});
                     break;
                 }
+                case 'create_pr': {
+                    // Create GitHub PR using gh CLI
+                    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder) {
+                        const { execSync } = require('child_process');
+                        try {
+                            const title = (msg.title || 'Agent task').replace(/"/g, '\\"');
+                            const body = (msg.body || '').replace(/"/g, '\\"');
+                            const cmd = `gh pr create --title "${title}" --body "${body}"`;
+                            const result = execSync(cmd, { cwd: wsFolder, encoding: 'utf-8', timeout: 30000 });
+                            try { webview.postMessage({ type: 'pr_result', success: true, url: result.trim() }); } catch {}
+                        } catch (err: any) {
+                            const errMsg = err.stderr || err.message || 'Unknown error';
+                            try { webview.postMessage({ type: 'pr_result', success: false, error: errMsg }); } catch {}
+                        }
+                    }
+                    break;
+                }
                 case 'save_slot_state': {
                     // Persist per-tab chat HTML to .proton9/slots/
-                    const wsFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-                    if (wsFolder && msg.slotId) {
+                    const wsFolder2 = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+                    if (wsFolder2 && msg.slotId) {
                         const fs = require('fs');
                         const path = require('path');
-                        const slotsDir = path.join(wsFolder, '.proton9', 'slots');
+                        const slotsDir = path.join(wsFolder2, '.proton9', 'slots');
                         try {
                             fs.mkdirSync(slotsDir, { recursive: true });
                             const filepath = path.join(slotsDir, `${msg.slotId}.json`);
@@ -436,6 +454,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .tab-dot { width:6px; height:6px; border-radius:50%; }
         .agent-tab .tab-dot.running { background:#dcdcaa; animation:pulse 1s infinite; }
         .agent-tab .tab-dot.idle { background:#4ec9b0; }
+        .agent-tab .tab-dot.error { background:#f44747; }
         .agent-tab .tab-dot.done { background:#888; }
         .agent-tab .tab-close { background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:12px; padding:0 2px; opacity:0; line-height:1; }
         .agent-tab:hover .tab-close { opacity:0.7; }
@@ -576,6 +595,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 // Restore per-slot running state
                 setRunning(!!slot.running);
                 if (slot.running) { setStatus('running', 'Running...'); } else { setStatus('connected', 'Ready'); }
+                // Restore per-slot model selection in dropdowns
+                if (slot.provider && providerSelect) { providerSelect.value = slot.provider; }
+                if (slot.model && modelSelect) { modelSelect.value = slot.model; }
                 // Point shared refs at active slot for legacy compat
                 streamingEl = slot.streamingEl;
                 currentFeedEl = slot.feedEl;
@@ -983,9 +1005,14 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 var provider = providerSelect.value;
                 var model = modelSelect ? modelSelect.value : '';
                 if (!model) { addMessage('Please select a model.', 'error'); return; }
-                vscode.postMessage({ type: 'set_model', provider: provider, model: model });
+                // Store per-slot and send scoped set_model
+                var aSlot = getSlot(activeSlot);
+                aSlot.provider = provider;
+                aSlot.model = model;
+                vscode.postMessage({ type: 'set_model', provider: provider, model: model, slot_id: activeSlot });
                 settingsPanel.classList.remove('open');
-                addMessage('Switching to ' + provider + '/' + model + '...', 'system');
+                addMessageToSlot('Switching ' + activeSlot.toUpperCase() + ' to ' + provider + '/' + model + '...', 'system', activeSlot);
+                updateSlotInfo();
             });
 
             function sendTask() {
@@ -1116,9 +1143,9 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         var tcS = getSlot(evSlot);
                         endStreamingInSlot(evSlot);
                         tcS.running = false; tcS.active = false;
-                        updateTabDot(evSlot, 'idle');
-                        if (evSlot === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
                         var taskResult = msg.result || {};
+                        updateTabDot(evSlot, taskResult.task_complete === false ? 'error' : 'done');
+                        if (evSlot === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
                         finalizeActionFeedInSlot(taskResult, evSlot);
                         if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
                         var responseText = tcS.streamBuffer || taskResult.summary || '(no response)';
@@ -1134,7 +1161,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         var teS = getSlot(evSlot);
                         endStreamingInSlot(evSlot);
                         teS.running = false; teS.active = false;
-                        updateTabDot(evSlot, 'idle');
+                        updateTabDot(evSlot, 'error');
                         if (evSlot === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
                         addMessageToSlot('Error: ' + (msg.error || 'Unknown'), 'error', evSlot);
                         teS.streamBuffer = '';
@@ -1177,6 +1204,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         break;
                     case 'task_artifact':
                         addArtifactCardToSlot(msg.title, msg.content, msg.artifact_type, evSlot);
+                        break;
+                    case 'pr_result':
+                        if (msg.success) {
+                            addMessageToSlot('✅ PR created: ' + (msg.url || ''), 'system', activeSlot);
+                        } else {
+                            addMessageToSlot('❌ PR failed: ' + (msg.error || 'Unknown'), 'error', activeSlot);
+                        }
                         break;
                     case 'saved_slots':
                         // Restore saved tab states from previous session
@@ -1482,6 +1516,22 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 el.style.fontSize = '12px';
                 el.style.lineHeight = '1.6';
                 slot.container.appendChild(el);
+                // Add Create PR button for successful completions
+                if (!stopped && (result.files_changed || []).length > 0) {
+                    var prBtn = document.createElement('button');
+                    prBtn.textContent = '🔀 Create PR';
+                    prBtn.style.cssText = 'margin:4px 0 8px;padding:6px 14px;background:rgba(78,201,176,0.15);color:#4ec9b0;border:1px solid rgba(78,201,176,0.3);border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;';
+                    prBtn.addEventListener('mouseover', function() { prBtn.style.background = 'rgba(78,201,176,0.25)'; });
+                    prBtn.addEventListener('mouseout', function() { prBtn.style.background = 'rgba(78,201,176,0.15)'; });
+                    prBtn.addEventListener('click', function() {
+                        var prTitle = (result.summary || 'Agent task').substring(0, 72);
+                        var prBody = '## Changes\\n' + (result.files_changed || []).map(function(f) { return '- ' + f; }).join('\\n');
+                        prBtn.textContent = '⏳ Creating PR...';
+                        prBtn.disabled = true;
+                        vscode.postMessage({ type: 'create_pr', title: prTitle, body: prBody });
+                    });
+                    slot.container.appendChild(prBtn);
+                }
                 if (slotId === activeSlot) scrollToBottom();
             }
 

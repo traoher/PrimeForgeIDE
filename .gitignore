@@ -25,3 +25,7 @@ product.overrides.json
 # Proton9 agent secrets
 agent/.env
 
+
+# Python bytecode
+**/__pycache__/
+*.pyc
