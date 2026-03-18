@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-03-16T07:20:07.173184",
+  "updated_at": "2026-03-17T18:36:23.451423",
   "day": {
     "2026-03-14": {
       "_total": {
@@ -48,14 +48,46 @@
     },
     "2026-03-16": {
       "_total": {
-        "input_tokens": 100982,
-        "output_tokens": 3051,
-        "calls": 33
+        "input_tokens": 429105,
+        "output_tokens": 5679,
+        "calls": 83
       },
       "deepseek-chat": {
         "input_tokens": 100982,
         "output_tokens": 3051,
         "calls": 33
+      },
+      "gemini-3.1-flash-image-preview": {
+        "input_tokens": 339,
+        "output_tokens": 145,
+        "calls": 6
+      },
+      "claude-3-7-sonnet-20250219": {
+        "input_tokens": 327784,
+        "output_tokens": 2483,
+        "calls": 44
+      }
+    },
+    "2026-03-17": {
+      "_total": {
+        "input_tokens": 352102,
+        "output_tokens": 8970,
+        "calls": 45
+      },
+      "claude-3-7-sonnet-20250219": {
+        "input_tokens": 67342,
+        "output_tokens": 3607,
+        "calls": 12
+      },
+      "deepseek-chat": {
+        "input_tokens": 284518,
+        "output_tokens": 5229,
+        "calls": 29
+      },
+      "claude-sonnet-4-20250514": {
+        "input_tokens": 242,
+        "output_tokens": 134,
+        "calls": 4
       }
     }
   },
@@ -89,28 +121,43 @@
     },
     "2026-W12": {
       "_total": {
-        "input_tokens": 100982,
-        "output_tokens": 3051,
-        "calls": 33
+        "input_tokens": 781207,
+        "output_tokens": 14649,
+        "calls": 128
       },
       "deepseek-chat": {
-        "input_tokens": 100982,
-        "output_tokens": 3051,
-        "calls": 33
+        "input_tokens": 385500,
+        "output_tokens": 8280,
+        "calls": 62
+      },
+      "gemini-3.1-flash-image-preview": {
+        "input_tokens": 339,
+        "output_tokens": 145,
+        "calls": 6
+      },
+      "claude-3-7-sonnet-20250219": {
+        "input_tokens": 395126,
+        "output_tokens": 6090,
+        "calls": 56
+      },
+      "claude-sonnet-4-20250514": {
+        "input_tokens": 242,
+        "output_tokens": 134,
+        "calls": 4
       }
     }
   },
   "month": {
     "2026-03": {
       "_total": {
-        "input_tokens": 1313018,
-        "output_tokens": 24171,
-        "calls": 417
+        "input_tokens": 1993243,
+        "output_tokens": 35769,
+        "calls": 512
       },
       "deepseek-chat": {
-        "input_tokens": 1106272,
-        "output_tokens": 12550,
-        "calls": 254
+        "input_tokens": 1390790,
+        "output_tokens": 17779,
+        "calls": 283
       },
       "gemini-2.5-flash": {
         "input_tokens": 186420,
@@ -126,19 +173,34 @@
         "input_tokens": 6561,
         "output_tokens": 39,
         "calls": 1
+      },
+      "gemini-3.1-flash-image-preview": {
+        "input_tokens": 339,
+        "output_tokens": 145,
+        "calls": 6
+      },
+      "claude-3-7-sonnet-20250219": {
+        "input_tokens": 395126,
+        "output_tokens": 6090,
+        "calls": 56
+      },
+      "claude-sonnet-4-20250514": {
+        "input_tokens": 242,
+        "output_tokens": 134,
+        "calls": 4
       }
     }
   },
   "lifetime": {
     "_total": {
-      "input_tokens": 1313018,
-      "output_tokens": 24171,
-      "calls": 417
+      "input_tokens": 1993243,
+      "output_tokens": 35769,
+      "calls": 512
     },
     "deepseek-chat": {
-      "input_tokens": 1106272,
-      "output_tokens": 12550,
-      "calls": 254
+      "input_tokens": 1390790,
+      "output_tokens": 17779,
+      "calls": 283
     },
     "gemini-2.5-flash": {
       "input_tokens": 186420,
@@ -154,6 +216,21 @@
       "input_tokens": 6561,
       "output_tokens": 39,
       "calls": 1
+    },
+    "gemini-3.1-flash-image-preview": {
+      "input_tokens": 339,
+      "output_tokens": 145,
+      "calls": 6
+    },
+    "claude-3-7-sonnet-20250219": {
+      "input_tokens": 395126,
+      "output_tokens": 6090,
+      "calls": 56
+    },
+    "claude-sonnet-4-20250514": {
+      "input_tokens": 242,
+      "output_tokens": 134,
+      "calls": 4
     }
   }
 }

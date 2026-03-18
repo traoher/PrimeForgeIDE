@@ -1,6 +1,6 @@
 llm:
-  provider: deepseek
-  model: deepseek-chat
+  provider: anthropic
+  model: claude-sonnet-4-20250514
   fallback_provider: deepseek
   call_timeout_seconds: 180
   throttle_max_wait_seconds: 45

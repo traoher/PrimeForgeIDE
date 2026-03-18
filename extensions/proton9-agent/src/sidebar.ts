@@ -739,7 +739,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 deepseek: ['deepseek-chat', 'deepseek-reasoner'],
                 gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash'],
                 openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
-                anthropic: ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022']
+                anthropic: ['claude-sonnet-4-20250514', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest']
             };
 
             providerSelect.addEventListener('change', function() {
@@ -1170,7 +1170,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 var outTok = usage.total_output_tokens || 0;
                 if (inTok || outTok) {
                     var fmt = function(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'K' : n; };
-                    lines.push('🔢 Tokens: ' + fmt(inTok) + ' in / ' + fmt(outTok) + ' out');
+                    var tokLine = '🔢 Tokens: ' + fmt(inTok) + ' in / ' + fmt(outTok) + ' out';
+                    if (result.elapsed) { tokLine += ' · ⏱ ' + result.elapsed + 's'; }
+                    lines.push(tokLine);
+                } else if (result.elapsed) {
+                    lines.push('⏱ ' + result.elapsed + 's');
                 }
                 var findings = result.critic_findings || [];
                 if (findings.length) {

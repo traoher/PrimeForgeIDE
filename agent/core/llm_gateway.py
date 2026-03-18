@@ -22,10 +22,13 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 class LLMResponse:
     """Structured response from LLM."""
-    def __init__(self, text: str, tool_call: dict = None, usage: dict = None):
+    def __init__(self, text: str, tool_call: dict = None, usage: dict = None,
+                 actual_provider: str = None, actual_model: str = None):
         self.text = text
         self.tool_call = tool_call  # {"name": str, "arguments": dict}
         self.usage = usage or {}
+        self.actual_provider = actual_provider  # Which provider actually answered
+        self.actual_model = actual_model  # Which model actually answered
 
     def __repr__(self):
         if self.tool_call:
@@ -561,8 +564,8 @@ class AnthropicProvider:
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not set in .env")
         
-        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-3-7-sonnet-20250219")
-        fallback_models = [self.model, "claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022"]
+        self.model = model or os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514")
+        fallback_models = [self.model, "claude-sonnet-4-20250514", "claude-3-7-sonnet-latest", "claude-3-5-haiku-latest"]
         self.models_to_try = list(dict.fromkeys(fallback_models))
         self.client = anthropic.Anthropic(api_key=api_key)
 
@@ -624,15 +627,18 @@ class AnthropicProvider:
                 response = self.client.messages.create(**kwargs)
                 
                 if current_model != self.model:
+                    print(f"\n  [LLM FALLBACK] Anthropic switched to {current_model}")
                     self.model = current_model
                 break
             except Exception as e:
                 error_str = str(e).lower()
                 is_quota = "429" in error_str or "overloaded" in error_str or "rate limit" in error_str
                 is_server_error = "500" in error_str or "503" in error_str or "internal error" in error_str
-                if is_quota or is_server_error:
+                is_auth = "401" in error_str or "authentication" in error_str or "deprecated" in error_str
+                if is_quota or is_server_error or is_auth:
+                    print(f"\n  [LLM] Anthropic {current_model} failed: {e}. Trying next model...")
                     last_error = e
-                    time.sleep(2)
+                    time.sleep(1)
                     continue
                 else:
                     raise
@@ -1158,6 +1164,9 @@ class LLMGateway:
             except Exception as e:
                 print(f"  [LLM] Streaming failed ({e}), falling back to regular call", flush=True)
 
+        responded_provider = self.provider_name
+        responded_model = model_name
+
         response = self._call_with_retries(
             messages, tools=tools, images=images,
             provider=self.provider, provider_label=self.provider_name,
@@ -1181,6 +1190,8 @@ class LLMGateway:
                     provider=fb, provider_label=fb_name,
                 )
                 if response is not None:
+                    responded_provider = fb_name
+                    responded_model = fb_model
                     print(f"  [LLM] Fallback {fb_name} succeeded", flush=True)
                     break
 
@@ -1188,7 +1199,11 @@ class LLMGateway:
             tried = [self.provider_name] + self._fallback_chain
             raise RuntimeError(f"LLM call failed on ALL providers: {', '.join(tried)}")
 
-        # Track usage
+        # Tag response with actual provider/model for transparent tracking
+        response.actual_provider = responded_provider
+        response.actual_model = responded_model
+
+        # Track usage — use ACTUAL model, not configured one
         in_tokens = response.usage.get("input_tokens", 0)
         out_tokens = response.usage.get("output_tokens", 0)
         
@@ -1199,7 +1214,7 @@ class LLMGateway:
         # Add actual usage to the sliding window tracker
         self.token_tracker.add_tokens(in_tokens + out_tokens)
         try:
-            self.token_ledger.record_usage(in_tokens, out_tokens, model=model_name)
+            self.token_ledger.record_usage(in_tokens, out_tokens, model=responded_model)
         except Exception as e:
             print(f"  [LLM] Warning: failed to record token ledger: {e}", flush=True)
         elapsed = time.time() - call_started

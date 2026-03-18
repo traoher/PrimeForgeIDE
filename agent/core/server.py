@@ -155,7 +155,7 @@ class ForgeServer:
             print(f"  [SERVER] Config save failed: {e}")
 
     def _query_available_models(self, provider: str = None) -> list:
-        """Query available models for a given provider (or the configured one)."""
+        """Query available models for a given provider. Caches to config/models_cache.json."""
         # Ensure .env is loaded so API keys are available
         try:
             from dotenv import load_dotenv
@@ -169,15 +169,18 @@ class ForgeServer:
         if not provider:
             llm_cfg = self.config.get("llm", {})
             provider = llm_cfg.get("provider", "")
-        models = []
 
+        # Cache file path
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_path = os.path.join(project_root, "config", "models_cache.json")
+
+        models = []
         try:
             if provider == "gemini":
                 api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
                 if api_key:
                     from google import genai
                     client = genai.Client(api_key=api_key)
-                    # Exclude non-text models by name pattern
                     skip_patterns = ("embedding", "imagen", "veo", "tts", "audio", "robotics", "gemma", "aqa", "nano-banana")
                     for m in client.models.list():
                         name = m.name.replace("models/", "")
@@ -205,23 +208,51 @@ class ForgeServer:
                     for m in client.models.list():
                         models.append({"id": m.id, "context_window": None})
             elif provider == "anthropic":
-                # Anthropic doesn't have a list endpoint; use known models
-                models = [
-                    {"id": "claude-3-7-sonnet-20250219", "context_window": 200000},
-                    {"id": "claude-3-5-sonnet-20241022", "context_window": 200000},
-                    {"id": "claude-3-5-haiku-20241022", "context_window": 200000},
-                ]
+                api_key = os.environ.get("ANTHROPIC_API_KEY")
+                if api_key:
+                    import anthropic as _anthropic
+                    client = _anthropic.Anthropic(api_key=api_key)
+                    resp = client.models.list()
+                    for m in resp.data:
+                        models.append({"id": m.id, "context_window": 200000})
         except Exception as e:
             print(f"  [SERVER] Model query failed for {provider}: {e}")
 
+        # Save to cache if we got results
         if models:
-            print(f"  [SERVER] Found {len(models)} models for {provider}")
+            try:
+                cache_data = {}
+                if os.path.exists(cache_path):
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        cache_data = json.load(f)
+                cache_data[provider] = models
+                with open(cache_path, "w", encoding="utf-8") as f:
+                    json.dump(cache_data, f, indent=2)
+                print(f"  [SERVER] Cached {len(models)} models for {provider} → models_cache.json")
+            except Exception as e:
+                print(f"  [SERVER] Cache write failed: {e}")
         else:
-            # Fallback: at least show the configured model
+            # Try loading from cache if live query failed
+            try:
+                if os.path.exists(cache_path):
+                    with open(cache_path, "r", encoding="utf-8") as f:
+                        cache_data = json.load(f)
+                    cached = cache_data.get(provider, [])
+                    if cached:
+                        models = cached
+                        print(f"  [SERVER] Loaded {len(models)} models for {provider} from cache")
+            except Exception:
+                pass
+
+        if not models:
+            # Last resort: show the configured model
             llm_cfg = self.config.get("llm", {})
             current = llm_cfg.get("model", "")
             if current:
                 models.append({"id": current, "context_window": None})
+
+        if models:
+            print(f"  [SERVER] Found {len(models)} models for {provider}")
         return models
 
     def _get_cumulative_usage(self) -> dict:
@@ -767,10 +798,10 @@ class ForgeServer:
                     self._session_tokens["input"] += in_tok
                     self._session_tokens["output"] += out_tok
 
-                    # Record to SQLite
+                    # Record to SQLite — use ACTUAL provider/model, not configured
                     if self.memory_enabled and self.memory:
-                        provider = self.config.get("llm", {}).get("provider", "unknown")
-                        model = self.config.get("llm", {}).get("model", "unknown")
+                        provider = getattr(conv_resp, 'actual_provider', None) or self.config.get("llm", {}).get("provider", "unknown")
+                        model = getattr(conv_resp, 'actual_model', None) or self.config.get("llm", {}).get("model", "unknown")
                         self.memory.record_token_usage(
                             provider=provider, model=model,
                             input_tokens=in_tok, output_tokens=out_tok,

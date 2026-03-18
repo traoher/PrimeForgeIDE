@@ -50,8 +50,13 @@ class SafetyRails:
         self.recent_errors = []
 
     def check_iteration(self):
-        """Increment iteration counter. No hard cap — rabbit hole protection is in agent.py."""
+        """Increment iteration counter. Hard cap as last-resort safety net."""
         self.iteration_count += 1
+        if self.iteration_count > self.max_iterations:
+            raise SafetyError(
+                f"Hard iteration limit reached ({self.max_iterations} steps). "
+                f"Agent must terminate. Call done() with your best result."
+            )
 
     def check_error_loop(self, error_msg: str, full_output: str = ""):
         """Check if the same error is repeating.

@@ -570,6 +570,7 @@ class Agent(PlannerMixin, RemediationMixin):
         last_action_signature = None
         repeated_action_streak = 0
         readonly_streak = 0
+        dedup_streak = 0  # Consecutive dedup hits — force-stop at 5
         repeated_read_recovery_used = False
         failed_approaches: list[str] = []  # Track failed fix attempts for remediation blocklist
         same_tool_streak = 0       # Rabbit hole guard: same tool type in a row
@@ -724,11 +725,20 @@ class Agent(PlannerMixin, RemediationMixin):
                 # Command deduplication guard
                 tool_args_json = json.dumps(tool_args, sort_keys=True)
                 if self.last_tool_call == (tool_name, tool_args_json):
-                    print(f"  [DEDUP] Identical consecutive tool call detected: {tool_name}")
+                    dedup_streak += 1
+                    print(f"  [DEDUP] Identical consecutive tool call detected: {tool_name} (streak: {dedup_streak})")
+                    if dedup_streak >= 5:
+                        final_summary = (
+                            f"Stopped: identical tool call '{tool_name}' repeated {dedup_streak} times. "
+                            "Agent is stuck in an unrecoverable loop."
+                        )
+                        print(f"\n  🛑 DEDUP STOP: {final_summary}")
+                        break
                     self.messages.append({"role": "assistant", "content": f"Calling {tool_name}({json.dumps(tool_args, default=str)[:300]})"})
                     self.messages.append({"role": "user", "content": "You just tried this exact same tool call and it failed. You MUST try a different approach or different arguments."})
                     continue
                 self.last_tool_call = (tool_name, tool_args_json)
+                dedup_streak = 0  # Reset on different call
 
                 # Trial 14: Validate tool arguments before execution
                 validation_error = self._validate_tool_args(tool_name, tool_args)
