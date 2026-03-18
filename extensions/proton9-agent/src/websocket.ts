@@ -88,8 +88,12 @@ export class ForgeWebSocket {
         this.send({ type: 'run_task', task, working_dir: workingDir, max_iterations: maxIterations, active_file: activeFile || null, session_id: sessionId || '', diagnostics: diagnostics || [], mentioned_files: mentionedFiles || [], slot_id: slotId || 'p9-1' });
     }
 
-    stopTask(): void {
-        this.send({ type: 'stop' });
+    stopTask(slotId?: string): void {
+        if (slotId) {
+            this.send({ type: 'stop_slot', slot_id: slotId });
+        } else {
+            this.send({ type: 'stop' });
+        }
     }
 
     setWorkspace(path: string): void {

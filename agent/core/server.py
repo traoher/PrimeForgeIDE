@@ -739,8 +739,7 @@ class ForgeServer:
                 "type": "error", "message": f"All {self.max_agent_slots} agent slots are busy"
             }))
             return
-        slot_id = data.get("slot_id") or "p9-1"  # Default to p9-1. NEVER auto-increment.
-        print(f"  [SLOT-DEBUG] Received slot_id from client: {data.get('slot_id')!r} → using: {slot_id!r}")
+        slot_id = data.get("slot_id") or "p9-1"
 
         if task_text.strip().lower() in {"/clear", "/newtopic"}:
             self.context.clear_session(session_key)

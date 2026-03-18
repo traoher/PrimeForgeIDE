@@ -122,12 +122,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         }
                     } catch { /* ignore mention errors */ }
 
-                    console.log('[P9-DBG-HOST] run_task received slot_id=' + msg.slot_id);
                     this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId, diagnostics.length > 0 ? diagnostics : undefined, mentionedFiles.length > 0 ? mentionedFiles : undefined, msg.slot_id);
                     break;
                 }
                 case 'stop':
-                    this.forge.stopTask();
+                    this.forge.stopTask(msg.slot_id);
                     break;
                 case 'set_model':
                     this.forge.setModel(msg.provider || '', msg.model || '');
@@ -252,7 +251,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // Forward events to the webview — do NOT re-render HTML (that destroys event listeners)
         this.disposables.push(
             this.forge.onEvent((msg) => {
-                console.log('[P9-TRACE] Event→webview:', msg.type, 'slot_id:', msg.slot_id || '(none)');
                 try { webview.postMessage(msg); } catch { /* ignore */ }
             })
         );
@@ -382,11 +380,13 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .history-item .delete-btn { background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:14px; padding:0 4px; opacity:0.5; min-width:unset; }
         .history-item .delete-btn:hover { color:#f44747; opacity:1; }
         /* Agent Tab Bar */
-        #agent-tabs { display:flex; align-items:center; gap:4px; padding:6px 8px; background:rgba(78,201,176,0.06); border-bottom:2px solid rgba(78,201,176,0.2); overflow-x:auto; min-height:36px; }
-        .agent-tab { display:flex; align-items:center; gap:4px; padding:5px 12px; border-radius:4px 4px 0 0; font-size:12px; font-weight:700; cursor:pointer; background:var(--vscode-sideBarSectionHeader-background); border:1px solid var(--vscode-widget-border, #444); border-bottom:none; color:var(--vscode-descriptionForeground); white-space:nowrap; letter-spacing:0.5px; }
-        .agent-tab:hover { background:var(--vscode-list-hoverBackground, #2a2d2e); color:var(--vscode-foreground); }
-        .agent-tab.active { background:var(--vscode-editor-background); border-color:#4ec9b0; color:#4ec9b0; }
-        .agent-tab .tab-dot { width:6px; height:6px; border-radius:50%; }
+        #agent-tabs { display:flex; gap:2px; padding:4px 8px; background:var(--vscode-sideBarSectionHeader-background); border-bottom:1px solid var(--vscode-sideBarSectionHeader-border, #333); overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; scrollbar-color:rgba(78,201,176,0.3) transparent; }
+        #agent-tabs::-webkit-scrollbar { height:3px; }
+        #agent-tabs::-webkit-scrollbar-thumb { background:rgba(78,201,176,0.3); border-radius:3px; }
+        .agent-tab { display:flex; align-items:center; gap:4px; padding:6px 8px; background:rgba(78,201,176,0.1); border:1px solid rgba(78,201,176,0.15); border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; color:var(--vscode-descriptionForeground); transition:all 0.15s; user-select:none; flex-shrink:0; min-width:60px; }
+        .agent-tab:hover { background:rgba(78,201,176,0.2); color:var(--vscode-foreground); }
+        .agent-tab.active { background:rgba(78,201,176,0.25); border-color:#4ec9b0; color:var(--vscode-foreground); }
+        .tab-dot { width:6px; height:6px; border-radius:50%; }
         .agent-tab .tab-dot.running { background:#dcdcaa; animation:pulse 1s infinite; }
         .agent-tab .tab-dot.idle { background:#4ec9b0; }
         .agent-tab .tab-dot.done { background:#888; }
@@ -959,8 +959,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             sendBtn.addEventListener('click', sendTask);
             inputEl.addEventListener('keydown', function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendTask(); } });
             stopBtn.addEventListener('click', function() {
-                vscode.postMessage({ type: 'stop' });
-                addMessage('Stop requested...', 'system');
+                vscode.postMessage({ type: 'stop', slot_id: activeSlot });
+                addMessageToSlot('Stop requested for ' + activeSlot.toUpperCase() + '...', 'system', activeSlot);
             });
 
             window.addEventListener('message', function(event) {
@@ -968,9 +968,6 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 if (!msg || !msg.type) return;
                 // ─── Per-slot routing: route events to correct slot container ───
                 var evSlot = msg.slot_id || activeSlot;
-                if (msg.type === 'task_started' || msg.type === 'task_complete' || msg.type === 'llm_token' || msg.type === 'action') {
-                    console.log('[P9-WV] ' + msg.type + ' slot_id=' + (msg.slot_id || 'MISSING') + ' → evSlot=' + evSlot + ' activeSlot=' + activeSlot);
-                }
                 switch (msg.type) {
                     case 'connected':
                         setStatus('connected', 'Ready');
@@ -980,6 +977,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         cachedModels = msg.available_models || [];
                         populateModels(cachedModels, cModel);
                         if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
+                        // Store into P9-1 slot and active slot
+                        var cSlot = getSlot('p9-1');
+                        cSlot.provider = cProv; cSlot.model = cModel;
+                        if (activeSlot !== 'p9-1') { var acSlot = getSlot(activeSlot); acSlot.provider = cProv; acSlot.model = cModel; }
+                        updateSlotInfo();
                         if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
                         if (msg.last_session && msg.last_session.objective) {
                             var ls = msg.last_session;
@@ -1093,10 +1095,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         var mProv = msg.provider || '';
                         var mModel = msg.model || '';
                         var mLabel = mProv && mModel ? mProv + '/' + mModel : mModel || mProv || '?';
-                        addMessage('\u2705 Model switched to ' + mLabel, 'system');
-                        if (modelLabel) { modelLabel.textContent = mLabel; }
-                        if (mProv && providerSelect) { providerSelect.value = mProv; }
-                        if (mModel && modelSelect) { modelSelect.value = mModel; }
+                        // Store per-slot
+                        var mcSlot = getSlot(evSlot);
+                        mcSlot.provider = mProv;
+                        mcSlot.model = mModel;
+                        addMessageToSlot('\u2705 Model switched to ' + mLabel, 'system', evSlot);
+                        if (evSlot === activeSlot) {
+                            if (modelLabel) { modelLabel.textContent = mLabel; }
+                            if (mProv && providerSelect) { providerSelect.value = mProv; }
+                            if (mModel && modelSelect) { modelSelect.value = mModel; }
+                            updateSlotInfo();
+                        }
                         break;
                     case 'models_list':
                         if (msg.provider === providerSelect.value) {
