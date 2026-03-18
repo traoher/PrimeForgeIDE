@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -72,9 +73,11 @@ class ForgeServer:
             memory=self.memory,
         )
         self.context_enabled_default = bool(context_cfg.get("enabled", True))
-        self.agent: Agent | None = None
-        self.current_task: asyncio.Task | None = None
-        self.stop_requested: bool = False
+        self.agent: Agent | None = None  # Legacy: points to most recent agent
+        self.agent_slots: dict = {}  # slot_id → {"task": asyncio.Task, "agent": Agent|None, "stop": bool, "provider": str, "model": str, "started": float}
+        self.max_agent_slots: int = 8
+        self.current_task: asyncio.Task | None = None  # Legacy compat
+        self.stop_requested: bool = False  # Legacy compat
         # Cumulative token/cost tracker (persists across tasks in session)
         self._session_tokens = {"input": 0, "output": 0, "cost": 0.0, "chars": 0}
         # Hydrate from today's SQLite totals so header doesn't reset on restart
@@ -345,7 +348,11 @@ class ForgeServer:
         if msg_type == "run_task":
             await self.run_task(data, websocket, session_key)
         elif msg_type == "stop":
-            await self.stop_task(websocket)
+            await self.stop_task(websocket, data)
+        elif msg_type == "stop_slot":
+            await self.stop_task(websocket, data)
+        elif msg_type == "list_slots":
+            await self.list_slots(websocket)
         elif msg_type == "ping":
             await websocket.send(json.dumps({"type": "pong"}))
         elif msg_type == "clear_context":
@@ -725,11 +732,15 @@ class ForgeServer:
         # If no workspace is set, still allow chat but skip heavy pre-work
         has_workspace = bool(working_dir and os.path.isdir(working_dir))
 
-        if self.current_task and not self.current_task.done():
+        # Multi-slot gate: check how many slots are active
+        active_slots = {k: v for k, v in self.agent_slots.items() if not v["task"].done()}
+        if len(active_slots) >= self.max_agent_slots:
             await websocket.send(json.dumps({
-                "type": "error", "message": "A task is already running"
+                "type": "error", "message": f"All {self.max_agent_slots} agent slots are busy"
             }))
             return
+        slot_id = data.get("slot_id") or "p9-1"  # Default to p9-1. NEVER auto-increment.
+        print(f"  [SLOT-DEBUG] Received slot_id from client: {data.get('slot_id')!r} → using: {slot_id!r}")
 
         if task_text.strip().lower() in {"/clear", "/newtopic"}:
             self.context.clear_session(session_key)
@@ -763,7 +774,7 @@ class ForgeServer:
 
                 if "CONVERSATION" in intent:
                     print(f"  [INTENT] Short-circuit — answering directly")
-                    await self.broadcast("task_started", {"task": task_text})
+                    await self.broadcast("task_started", {"task": task_text, "slot_id": slot_id})
 
                     import time as _time
                     t0 = _time.time()
@@ -785,7 +796,7 @@ class ForgeServer:
                         out_tok = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0
 
                     # Stream answer to sidebar
-                    await self.broadcast("llm_token", {"text": answer})
+                    await self.broadcast("llm_token", {"text": answer, "slot_id": slot_id})
 
                     # Record to conversation context
                     self.context.record_result(
@@ -813,6 +824,7 @@ class ForgeServer:
                         "input_tokens": self._session_tokens["input"],
                         "output_tokens": self._session_tokens["output"],
                         "cost_usd": round(self._session_tokens["cost"], 6),
+                        "slot_id": slot_id,
                     })
 
                     await self.broadcast("task_complete", {
@@ -824,6 +836,7 @@ class ForgeServer:
                             "elapsed": round(elapsed, 1),
                         },
                         "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+                        "slot_id": slot_id,
                     })
                     print(f"  [INTENT] Done ({in_tok} in / {out_tok} out, {elapsed:.1f}s)")
                     return  # Skip full agent pipeline
@@ -947,7 +960,7 @@ class ForgeServer:
             collapsed_context = (collapsed_context + mention_section) if collapsed_context else mention_section
             print(f"  [CONTEXT] @mentions: {len(mentioned_files)} files injected")
 
-        self.current_task = asyncio.create_task(
+        task_obj = asyncio.create_task(
             self._run_task_background(
                 websocket=websocket,
                 session_key=session_key,
@@ -958,8 +971,25 @@ class ForgeServer:
                 context_enabled=bool(context_enabled),
                 context_state=context_state,
                 collapsed_context=collapsed_context,
+                slot_id=slot_id,
             )
         )
+        self.agent_slots[slot_id] = {
+            "task": task_obj,
+            "agent": None,
+            "stop": False,
+            "provider": data.get("provider", self.config.get("llm", {}).get("provider", "")),
+            "model": data.get("model", self.config.get("llm", {}).get("model", "")),
+            "started": time.time(),
+            "task_text": task_text[:100],
+        }
+        self.current_task = task_obj  # Legacy compat
+        await self.broadcast("slot_started", {
+            "slot_id": slot_id,
+            "provider": self.agent_slots[slot_id]["provider"],
+            "model": self.agent_slots[slot_id]["model"],
+            "task": task_text[:100],
+        })
 
     async def set_workspace(self, data: dict, websocket):
         path = (data.get("path") or "").strip()
@@ -1143,6 +1173,7 @@ class ForgeServer:
         context_enabled: bool,
         context_state: dict,
         collapsed_context: str = "",
+        slot_id: str = "p9-1",
     ):
         """Run an agent task in background so stop/ping remain responsive."""
         await self.broadcast("task_started", {
@@ -1150,6 +1181,7 @@ class ForgeServer:
             "working_dir": os.path.abspath(working_dir) if working_dir else "",
             "context_enabled": context_enabled,
             "context_state": context_state,
+            "slot_id": slot_id,
         })
 
         # Run the agent in a thread to not block the event loop
@@ -1157,8 +1189,9 @@ class ForgeServer:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None,
-                self._run_agent_sync,
-                contextual_task, working_dir, max_iterations, original_task, collapsed_context,
+                lambda: self._run_agent_sync(
+                    contextual_task, working_dir, max_iterations, original_task, collapsed_context, slot_id
+                ),
             )
             self.context.record_result(
                 session_key=session_key,
@@ -1251,6 +1284,7 @@ class ForgeServer:
                 "result": result,
                 "cumulative_usage": self._get_cumulative_usage(),
                 "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+                "slot_id": slot_id,
             })
         except Exception as e:
             self.context.record_result(
@@ -1262,19 +1296,30 @@ class ForgeServer:
             await self.broadcast("task_error", {
                 "error": str(e),
                 "traceback": traceback.format_exc(),
+                "slot_id": slot_id,
             })
         finally:
-            self.current_task = None
+            self.current_task = None  # Legacy compat
+            # Clean up slot
+            if slot_id in self.agent_slots:
+                del self.agent_slots[slot_id]
+            await self.broadcast("slot_complete", {"slot_id": slot_id})
 
-    def _run_agent_sync(self, task: str, working_dir: str, max_iterations: int = None, raw_task: str = None, collapsed_context: str = "") -> dict:
+    def _run_agent_sync(self, task: str, working_dir: str, max_iterations: int = None, raw_task: str = None, collapsed_context: str = "", slot_id: str = "p9-1") -> dict:
         """Run the agent synchronously (called from thread pool)."""
         # If no workspace was set, use a safe temp directory rather than the agent's own source
         if not working_dir or not os.path.isdir(working_dir):
             import tempfile
             working_dir = tempfile.gettempdir()
         agent = Agent(working_dir=working_dir)
-        self.agent = agent
-        if self.stop_requested:
+        self.agent = agent  # Legacy compat
+        # Register agent in slot
+        if slot_id in self.agent_slots:
+            self.agent_slots[slot_id]["agent"] = agent
+        if slot_id in self.agent_slots and self.agent_slots[slot_id].get("stop"):
+            agent.request_cancel()
+            self.agent_slots[slot_id]["stop"] = False
+        elif self.stop_requested:  # Legacy compat
             agent.request_cancel()
             self.stop_requested = False
         # max_iterations no longer enforced — rabbit hole guards in agent.py handle this
@@ -1306,6 +1351,7 @@ class ForgeServer:
                     "step": step,
                     "tool": tool_name,
                     "args": {k: v[:500] if isinstance(v, str) else v for k, v in tool_args.items()},
+                    "slot_id": slot_id,
                 }),
                 self._loop,
             )
@@ -1317,6 +1363,7 @@ class ForgeServer:
                     "success": result.success,
                     "output": str(result)[:3000],
                     "error": result.error if not result.success else "",
+                    "slot_id": slot_id,
                 }),
                 self._loop,
             )
@@ -1328,6 +1375,7 @@ class ForgeServer:
         _task_chars = [0]  # chars in THIS task (for throttle)
 
         def stream_event(event_type: str, data: dict):
+            data["slot_id"] = slot_id  # Tag all streamed events with slot
             asyncio.run_coroutine_threadsafe(
                 self.broadcast(event_type, data),
                 self._loop,
@@ -1351,6 +1399,7 @@ class ForgeServer:
                             "input_tokens": total_in,
                             "output_tokens": total_out,
                             "cost_usd": round(cost, 6),
+                            "slot_id": slot_id,
                         }),
                         self._loop,
                     )
@@ -1359,16 +1408,38 @@ class ForgeServer:
             return agent.run(task, event_callback=stream_event, raw_task=raw_task)
         finally:
             self.agent = None
+            # Clean up slot agent reference
+            if slot_id in self.agent_slots:
+                self.agent_slots[slot_id]["agent"] = None
             # Disconnect MCP servers
             for client in mcp_clients:
                 try:
                     client.stop()
                 except Exception:
                     pass
-            self.stop_requested = False
+            self.stop_requested = False  # Legacy compat
 
-    async def stop_task(self, websocket):
-        """Stop the current running task."""
+    async def stop_task(self, websocket, data=None):
+        """Stop a task — by slot_id or legacy (most recent)."""
+        slot_id = (data or {}).get("slot_id") if data else None
+
+        if slot_id:
+            # Multi-slot: stop a specific slot
+            slot = self.agent_slots.get(slot_id)
+            if slot and slot.get("agent"):
+                slot["agent"].request_cancel()
+                await websocket.send(json.dumps({
+                    "type": "info", "message": f"Stop signal sent to {slot_id}"
+                }))
+                return
+            elif slot:
+                slot["stop"] = True
+                await websocket.send(json.dumps({
+                    "type": "info", "message": f"Stop queued for {slot_id}"
+                }))
+                return
+
+        # Legacy: stop the most recent agent
         if self.agent is not None:
             self.agent.request_cancel()
             await websocket.send(json.dumps({
@@ -1391,6 +1462,23 @@ class ForgeServer:
 
         await websocket.send(json.dumps({
             "type": "info", "message": "No active task to stop."
+        }))
+
+    async def list_slots(self, websocket):
+        """Return active agent slot statuses."""
+        slots = []
+        for sid, slot in self.agent_slots.items():
+            done = slot["task"].done() if slot.get("task") else True
+            slots.append({
+                "slot_id": sid,
+                "provider": slot.get("provider", ""),
+                "model": slot.get("model", ""),
+                "task": slot.get("task_text", ""),
+                "active": not done,
+                "elapsed": round(time.time() - slot.get("started", time.time()), 1),
+            })
+        await websocket.send(json.dumps({
+            "type": "slot_list", "slots": slots
         }))
 
     async def read_file(self, data: dict, websocket):

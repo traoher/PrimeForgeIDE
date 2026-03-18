@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-03-17T18:36:23.451423",
+  "updated_at": "2026-03-18T07:18:32.331206",
   "day": {
     "2026-03-14": {
       "_total": {
@@ -89,6 +89,28 @@
         "output_tokens": 134,
         "calls": 4
       }
+    },
+    "2026-03-18": {
+      "_total": {
+        "input_tokens": 88107,
+        "output_tokens": 7062,
+        "calls": 81
+      },
+      "deepseek-chat": {
+        "input_tokens": 87725,
+        "output_tokens": 6541,
+        "calls": 72
+      },
+      "gemini-3-flash-preview": {
+        "input_tokens": 101,
+        "output_tokens": 424,
+        "calls": 3
+      },
+      "gemini-3.1-flash-image-preview": {
+        "input_tokens": 281,
+        "output_tokens": 97,
+        "calls": 6
+      }
     }
   },
   "week": {
@@ -121,19 +143,19 @@
     },
     "2026-W12": {
       "_total": {
-        "input_tokens": 781207,
-        "output_tokens": 14649,
-        "calls": 128
+        "input_tokens": 869314,
+        "output_tokens": 21711,
+        "calls": 209
       },
       "deepseek-chat": {
-        "input_tokens": 385500,
-        "output_tokens": 8280,
-        "calls": 62
+        "input_tokens": 473225,
+        "output_tokens": 14821,
+        "calls": 134
       },
       "gemini-3.1-flash-image-preview": {
-        "input_tokens": 339,
-        "output_tokens": 145,
-        "calls": 6
+        "input_tokens": 620,
+        "output_tokens": 242,
+        "calls": 12
       },
       "claude-3-7-sonnet-20250219": {
         "input_tokens": 395126,
@@ -144,20 +166,25 @@
         "input_tokens": 242,
         "output_tokens": 134,
         "calls": 4
+      },
+      "gemini-3-flash-preview": {
+        "input_tokens": 101,
+        "output_tokens": 424,
+        "calls": 3
       }
     }
   },
   "month": {
     "2026-03": {
       "_total": {
-        "input_tokens": 1993243,
-        "output_tokens": 35769,
-        "calls": 512
+        "input_tokens": 2081350,
+        "output_tokens": 42831,
+        "calls": 593
       },
       "deepseek-chat": {
-        "input_tokens": 1390790,
-        "output_tokens": 17779,
-        "calls": 283
+        "input_tokens": 1478515,
+        "output_tokens": 24320,
+        "calls": 355
       },
       "gemini-2.5-flash": {
         "input_tokens": 186420,
@@ -175,9 +202,9 @@
         "calls": 1
       },
       "gemini-3.1-flash-image-preview": {
-        "input_tokens": 339,
-        "output_tokens": 145,
-        "calls": 6
+        "input_tokens": 620,
+        "output_tokens": 242,
+        "calls": 12
       },
       "claude-3-7-sonnet-20250219": {
         "input_tokens": 395126,
@@ -188,19 +215,24 @@
         "input_tokens": 242,
         "output_tokens": 134,
         "calls": 4
+      },
+      "gemini-3-flash-preview": {
+        "input_tokens": 101,
+        "output_tokens": 424,
+        "calls": 3
       }
     }
   },
   "lifetime": {
     "_total": {
-      "input_tokens": 1993243,
-      "output_tokens": 35769,
-      "calls": 512
+      "input_tokens": 2081350,
+      "output_tokens": 42831,
+      "calls": 593
     },
     "deepseek-chat": {
-      "input_tokens": 1390790,
-      "output_tokens": 17779,
-      "calls": 283
+      "input_tokens": 1478515,
+      "output_tokens": 24320,
+      "calls": 355
     },
     "gemini-2.5-flash": {
       "input_tokens": 186420,
@@ -218,9 +250,9 @@
       "calls": 1
     },
     "gemini-3.1-flash-image-preview": {
-      "input_tokens": 339,
-      "output_tokens": 145,
-      "calls": 6
+      "input_tokens": 620,
+      "output_tokens": 242,
+      "calls": 12
     },
     "claude-3-7-sonnet-20250219": {
       "input_tokens": 395126,
@@ -231,6 +263,11 @@
       "input_tokens": 242,
       "output_tokens": 134,
       "calls": 4
+    },
+    "gemini-3-flash-preview": {
+      "input_tokens": 101,
+      "output_tokens": 424,
+      "calls": 3
     }
   }
 }

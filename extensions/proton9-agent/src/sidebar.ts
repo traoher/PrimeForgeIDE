@@ -122,7 +122,8 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         }
                     } catch { /* ignore mention errors */ }
 
-                    this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId, diagnostics.length > 0 ? diagnostics : undefined, mentionedFiles.length > 0 ? mentionedFiles : undefined);
+                    console.log('[P9-DBG-HOST] run_task received slot_id=' + msg.slot_id);
+                    this.forge.runTask(msg.task, workDir, maxIter, activeFile, msg.sessionId, diagnostics.length > 0 ? diagnostics : undefined, mentionedFiles.length > 0 ? mentionedFiles : undefined, msg.slot_id);
                     break;
                 }
                 case 'stop':
@@ -251,7 +252,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         // Forward events to the webview — do NOT re-render HTML (that destroys event listeners)
         this.disposables.push(
             this.forge.onEvent((msg) => {
-                console.log('[Proton9] Event for webview:', msg.type);
+                console.log('[P9-TRACE] Event→webview:', msg.type, 'slot_id:', msg.slot_id || '(none)');
                 try { webview.postMessage(msg); } catch { /* ignore */ }
             })
         );
@@ -380,11 +381,34 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
         .history-item .count { font-size:10px; opacity:0.6; margin-left:8px; white-space:nowrap; }
         .history-item .delete-btn { background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:14px; padding:0 4px; opacity:0.5; min-width:unset; }
         .history-item .delete-btn:hover { color:#f44747; opacity:1; }
+        /* Agent Tab Bar */
+        #agent-tabs { display:flex; align-items:center; gap:4px; padding:6px 8px; background:rgba(78,201,176,0.06); border-bottom:2px solid rgba(78,201,176,0.2); overflow-x:auto; min-height:36px; }
+        .agent-tab { display:flex; align-items:center; gap:4px; padding:5px 12px; border-radius:4px 4px 0 0; font-size:12px; font-weight:700; cursor:pointer; background:var(--vscode-sideBarSectionHeader-background); border:1px solid var(--vscode-widget-border, #444); border-bottom:none; color:var(--vscode-descriptionForeground); white-space:nowrap; letter-spacing:0.5px; }
+        .agent-tab:hover { background:var(--vscode-list-hoverBackground, #2a2d2e); color:var(--vscode-foreground); }
+        .agent-tab.active { background:var(--vscode-editor-background); border-color:#4ec9b0; color:#4ec9b0; }
+        .agent-tab .tab-dot { width:6px; height:6px; border-radius:50%; }
+        .agent-tab .tab-dot.running { background:#dcdcaa; animation:pulse 1s infinite; }
+        .agent-tab .tab-dot.idle { background:#4ec9b0; }
+        .agent-tab .tab-dot.done { background:#888; }
+        .agent-tab .tab-close { background:none; border:none; color:var(--vscode-descriptionForeground); cursor:pointer; font-size:12px; padding:0 2px; opacity:0; line-height:1; }
+        .agent-tab:hover .tab-close { opacity:0.7; }
+        .agent-tab .tab-close:hover { opacity:1; color:#f44747; }
+        #add-slot-btn { background:rgba(78,201,176,0.1); border:1px dashed #4ec9b0; color:#4ec9b0; padding:5px 12px; border-radius:4px; font-size:12px; font-weight:700; cursor:pointer; white-space:nowrap; letter-spacing:0.5px; }
+        #add-slot-btn:hover { background:rgba(78,201,176,0.25); border-style:solid; }
+        .slot-info { font-size:10px; color:var(--vscode-descriptionForeground); padding:2px 12px 4px; background:var(--vscode-editor-background); border-bottom:1px solid var(--vscode-widget-border, #333); display:none; }
+        .slot-info.visible { display:flex; align-items:center; gap:8px; }
+        .slot-info .provider-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:rgba(78,201,176,0.15); color:#4ec9b0; }
+        .slot-info .elapsed { color:#dcdcaa; }
     </style>
 </head>
 <body>
     <div id="app">
         <div id="status-bar"><span id="status-dot" class="dot ${initialConnected ? 'connected' : 'disconnected'}"></span><span id="status-text">${initialConnected ? 'Ready' : 'Connecting...'}</span><span id="model-label"></span><button id="usage-btn" title="Token Usage">📊</button><button id="new-chat-btn" title="New Chat">+ New</button><button id="history-btn" title="Chat History">☰</button><button id="gear-btn" title="Settings">⚙</button></div>
+        <div id="agent-tabs">
+            <div class="agent-tab active" data-slot="p9-1"><span class="tab-dot idle"></span>P9-1<button class="tab-close" title="Close">×</button></div>
+            <button id="add-slot-btn" title="New Agent Slot">+ P9</button>
+        </div>
+        <div id="slot-info" class="slot-info"><span class="provider-badge" id="slot-provider"></span><span class="elapsed" id="slot-elapsed"></span></div>
         <div id="history-panel"></div>
         <div id="usage-panel"></div>
         <div id="settings-panel">
@@ -435,6 +459,163 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             let cachedModels = [];         // [{id, context_window}, ...]
             let streamBuffer = '';          // accumulate LLM tokens for saving
             var eventLog = [];              // all UI events for session replay
+
+            // ─── Per-Slot Container Architecture ───
+            const MAX_SLOTS = 3;
+            const agentTabs = document.getElementById('agent-tabs');
+            const addSlotBtn = document.getElementById('add-slot-btn');
+            const slotInfoEl = document.getElementById('slot-info');
+            const slotProviderEl = document.getElementById('slot-provider');
+            const slotElapsedEl = document.getElementById('slot-elapsed');
+            let activeSlot = 'p9-1';
+            let slotCounter = 1;
+            let slotTimerInterval = null;
+            let slotInput = { 'p9-1': '' }; // per-slot input text cache
+
+            // Per-slot state — each slot is a mini VM
+            let slots = {};
+            function initSlot(slotId) {
+                // Create a container div for this slot's messages
+                var container = document.createElement('div');
+                container.className = 'slot-content';
+                container.dataset.slot = slotId;
+                container.style.display = (slotId === activeSlot) ? 'block' : 'none';
+                messagesEl.appendChild(container);
+                slots[slotId] = {
+                    container: container,
+                    streamingEl: null,
+                    feedEl: null,
+                    feedBody: null,
+                    stepCount: 0,
+                    streamBuffer: '',
+                    running: false,
+                    provider: '',
+                    model: '',
+                    active: false,
+                    started: 0,
+                    prompt: '',
+                    answer: '',
+                };
+            }
+            // Initialize P9-1
+            initSlot('p9-1');
+
+            function getSlot(slotId) {
+                if (!slots[slotId]) initSlot(slotId);
+                return slots[slotId];
+            }
+
+            function switchTab(slotId) {
+                // Save current input text
+                slotInput[activeSlot] = inputEl.value;
+                // Hide all slot containers
+                Object.keys(slots).forEach(function(sid) {
+                    slots[sid].container.style.display = 'none';
+                });
+                activeSlot = slotId;
+                // Show target slot's container
+                var slot = getSlot(slotId);
+                slot.container.style.display = 'block';
+                // Restore input text
+                inputEl.value = slotInput[slotId] || '';
+                // Update tab highlight
+                document.querySelectorAll('.agent-tab').forEach(function(t) { t.classList.remove('active'); });
+                var tab = document.querySelector('.agent-tab[data-slot="' + slotId + '"]');
+                if (tab) tab.classList.add('active');
+                updateSlotInfo();
+                scrollToBottom();
+                // Restore per-slot running state
+                setRunning(!!slot.running);
+                if (slot.running) { setStatus('running', 'Running...'); } else { setStatus('connected', 'Ready'); }
+                // Point shared refs at active slot for legacy compat
+                streamingEl = slot.streamingEl;
+                currentFeedEl = slot.feedEl;
+                currentFeedBody = slot.feedBody;
+                stepCount = slot.stepCount;
+                streamBuffer = slot.streamBuffer;
+            }
+
+            function addTab(slotId, provider, model) {
+                // Enforce max slots
+                if (Object.keys(slots).length >= MAX_SLOTS) {
+                    addMessage('Maximum ' + MAX_SLOTS + ' agent tabs allowed.', 'error');
+                    return;
+                }
+                var tab = document.createElement('div');
+                tab.className = 'agent-tab';
+                tab.dataset.slot = slotId;
+                tab.innerHTML = '<span class="tab-dot idle"></span>' + slotId.toUpperCase() + '<button class="tab-close" title="Close">×</button>';
+                tab.addEventListener('click', function(e) { if (!(e.target instanceof HTMLButtonElement)) switchTab(slotId); });
+                tab.querySelector('.tab-close').addEventListener('click', function(e) { e.stopPropagation(); closeTab(slotId); });
+                agentTabs.insertBefore(tab, addSlotBtn);
+                initSlot(slotId);
+                slots[slotId].provider = provider || '';
+                slots[slotId].model = model || '';
+                slotInput[slotId] = '';
+                switchTab(slotId);
+            }
+
+            function closeTab(slotId) {
+                if (slotId === 'p9-1') return; // Don't close the primary tab
+                if (slots[slotId] && slots[slotId].running) {
+                    vscode.postMessage({ type: 'send_ws', payload: JSON.stringify({ type: 'stop_slot', slot_id: slotId }) });
+                }
+                var tab = document.querySelector('.agent-tab[data-slot="' + slotId + '"]');
+                if (tab) tab.remove();
+                // Remove container from DOM
+                if (slots[slotId] && slots[slotId].container) {
+                    slots[slotId].container.remove();
+                }
+                delete slots[slotId];
+                delete slotInput[slotId];
+                if (activeSlot === slotId) {
+                    var remaining = Object.keys(slots);
+                    if (remaining.length > 0) switchTab(remaining[0]);
+                }
+            }
+
+            function updateSlotInfo() {
+                var slot = slots[activeSlot];
+                if (slot && slot.provider) {
+                    slotProviderEl.textContent = slot.provider + '/' + slot.model;
+                    slotInfoEl.classList.add('visible');
+                } else {
+                    slotInfoEl.classList.remove('visible');
+                }
+            }
+
+            function updateTabDot(slotId, state) {
+                var tab = document.querySelector('.agent-tab[data-slot="' + slotId + '"] .tab-dot');
+                if (tab) { tab.className = 'tab-dot ' + state; }
+            }
+
+            // +P9 button: spawn new slot with current provider/model selection
+            addSlotBtn.addEventListener('click', () => {
+                slotCounter++;
+                const newSlotId = 'p9-' + slotCounter;
+                const provider = providerSelect ? providerSelect.value : 'deepseek';
+                const model = modelSelect ? modelSelect.value : '';
+                addTab(newSlotId, provider, model);
+                // Pre-fill info bar
+                updateSlotInfo();
+            });
+
+            // Tab click delegation for the default P9-1 tab
+            document.querySelector('.agent-tab[data-slot=\"p9-1\"]').addEventListener('click', (e) => { if (!(e.target instanceof HTMLButtonElement)) switchTab('p9-1'); });
+            document.querySelector('.agent-tab[data-slot=\"p9-1\"] .tab-close').addEventListener('click', (e) => { e.stopPropagation(); /* Don't allow closing the primary tab */ });
+
+            // Start elapsed timer
+            slotTimerInterval = setInterval(function() {
+                var slot = slots[activeSlot];
+                if (slot && slot.active && slot.started) {
+                    const elapsed = Math.round(Date.now() / 1000 - slot.started);
+                    const mins = Math.floor(elapsed / 60);
+                    const secs = elapsed % 60;
+                    slotElapsedEl.textContent = '⏱ ' + mins + ':' + String(secs).padStart(2, '0');
+                } else {
+                    slotElapsedEl.textContent = '';
+                }
+            }, 1000);
 
             // ─── Multi-session chat history ───
             var sessions = [];             // [{id, title, messages: [{type, text, ts}]}]
@@ -763,12 +944,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 if (!task || isRunning) return;
                 currentPrompt = task;
                 currentAnswer = '';
-                stepCount = 0;
+                var s = getSlot(activeSlot);
+                s.prompt = task;
+                s.streamBuffer = '';
+                s.stepCount = 0;
                 streamBuffer = '';
-                addMessage(task, 'user');
+                stepCount = 0;
+                addMessageToSlot(task, 'user', activeSlot);
                 eventLog.push({ type: 'user_message', text: task, ts: Date.now() });
                 inputEl.value = '';
-                vscode.postMessage({ type: 'run_task', task: task, sessionId: activeSessionId });
+                vscode.postMessage({ type: 'run_task', task: task, sessionId: activeSessionId, slot_id: activeSlot });
             }
 
             sendBtn.addEventListener('click', sendTask);
@@ -781,6 +966,11 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
             window.addEventListener('message', function(event) {
                 const msg = event.data;
                 if (!msg || !msg.type) return;
+                // ─── Per-slot routing: route events to correct slot container ───
+                var evSlot = msg.slot_id || activeSlot;
+                if (msg.type === 'task_started' || msg.type === 'task_complete' || msg.type === 'llm_token' || msg.type === 'action') {
+                    console.log('[P9-WV] ' + msg.type + ' slot_id=' + (msg.slot_id || 'MISSING') + ' → evSlot=' + evSlot + ' activeSlot=' + activeSlot);
+                }
                 switch (msg.type) {
                     case 'connected':
                         setStatus('connected', 'Ready');
@@ -790,9 +980,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         cachedModels = msg.available_models || [];
                         populateModels(cachedModels, cModel);
                         if (modelLabel) { modelLabel.textContent = cProv && cModel ? cProv + '/' + cModel : cModel || cProv || ''; }
-                        // Store persistent usage data from SQLite
                         if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
-                        // "Continue My Work" — show last session card if available
                         if (msg.last_session && msg.last_session.objective) {
                             var ls = msg.last_session;
                             var timeAgo = '';
@@ -829,50 +1017,78 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         }
                         break;
                     case 'disconnected': setStatus('disconnected', 'Disconnected'); setRunning(false); break;
-                    case 'task_started':
-                        setRunning(true); setStatus('running', 'Running...');
-                        createActionFeed();
-                        eventLog.push({ type: 'action_feed_start', prompt: currentPrompt, ts: Date.now() });
-                        var ub = document.getElementById('usage-panel'); if(ub){ub.style.display='none';}
+                    case 'task_started': {
+                        var tsS = getSlot(evSlot);
+                        tsS.running = true; tsS.active = true; tsS.started = Date.now() / 1000;
+                        createActionFeedInSlot(evSlot);
+                        updateTabDot(evSlot, 'running');
+                        if (evSlot === activeSlot) {
+                            setRunning(true); setStatus('running', 'Running...');
+                            var ub = document.getElementById('usage-panel'); if(ub){ub.style.display='none';}
+                        }
+                        updateSlotInfo();
                         break;
-                    case 'action':
-                        endStreaming();
-                        addAction(msg.step, msg.tool, msg.args);
-                        eventLog.push({ type: 'action', step: msg.step, tool: msg.tool, args: msg.args, ts: Date.now() });
+                    }
+                    case 'slot_started':
+                        var sid = msg.slot_id || '';
+                        if (sid && !slots[sid]) { addTab(sid, msg.provider || '', msg.model || ''); }
+                        else if (sid && slots[sid]) { slots[sid].provider = msg.provider || ''; slots[sid].model = msg.model || ''; slots[sid].active = true; slots[sid].started = Date.now() / 1000; }
+                        updateTabDot(sid, 'running');
+                        if (sid === activeSlot) updateSlotInfo();
                         break;
-                    case 'result':
-                        updateLastAction(msg.success, msg.output, msg.error);
-                        eventLog.push({ type: 'result', success: msg.success, output: (msg.output || '').substring(0, 500), error: msg.error, ts: Date.now() });
+                    case 'slot_complete':
+                        var csid = msg.slot_id || '';
+                        if (csid && slots[csid]) { slots[csid].active = false; slots[csid].running = false; }
+                        updateTabDot(csid, 'done');
+                        if (csid === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
                         break;
-                    case 'llm_token': appendStream(msg.text || ''); streamBuffer += (msg.text || ''); break;
+                    case 'action': {
+                        endStreamingInSlot(evSlot);
+                        addActionInSlot(msg.step, msg.tool, msg.args, evSlot);
+                        break;
+                    }
+                    case 'result': {
+                        updateLastActionInSlot(msg.success, msg.output, msg.error, evSlot);
+                        break;
+                    }
+                    case 'llm_token': {
+                        appendStreamInSlot(msg.text || '', evSlot);
+                        var lts = getSlot(evSlot);
+                        lts.streamBuffer += (msg.text || '');
+                        if (evSlot === activeSlot) { streamBuffer = lts.streamBuffer; }
+                        break;
+                    }
                     case 'token_update':
-                        // Store silently — shown in Usage panel on demand
                         window._lastTokenUpdate = { input: msg.input_tokens||0, output: msg.output_tokens||0, cost: msg.cost_usd||0 };
                         break;
-                    case 'task_complete':
-                        endStreaming();
-                        setRunning(false);
-                        setStatus('connected', 'Ready');
+                    case 'task_complete': {
+                        var tcS = getSlot(evSlot);
+                        endStreamingInSlot(evSlot);
+                        tcS.running = false; tcS.active = false;
+                        updateTabDot(evSlot, 'idle');
+                        if (evSlot === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
                         var taskResult = msg.result || {};
-                        finalizeActionFeed(taskResult);
-                        eventLog.push({ type: 'action_feed_end', result: { summary: taskResult.summary, files_changed: taskResult.files_changed, actions: (taskResult.actions || []).map(function(a) { return { step: a.step, success: a.success }; }) }, ts: Date.now() });
-                        // Refresh persistent usage from task_complete broadcast
+                        finalizeActionFeedInSlot(taskResult, evSlot);
                         if (msg.persistent_usage) { window._persistentUsage = msg.persistent_usage; }
-                        // Save the full agent response as a message
-                        var summary = taskResult.summary || '';
-                        var responseText = streamBuffer || summary || '(no response)';
-                        addMessage(responseText, 'assistant');
-                        eventLog.push({ type: 'assistant_text', text: responseText, ts: Date.now() });
-                        streamBuffer = '';
-                        addCompletionCard(taskResult);
-                        eventLog.push({ type: 'completion', data: { summary: taskResult.summary, files_changed: taskResult.files_changed, actions: taskResult.actions, usage: taskResult.usage, critic_findings: taskResult.critic_findings }, ts: Date.now() });
-                        // Keep event log manageable
-                        if (eventLog.length > 500) eventLog = eventLog.slice(-500);
-                        // Persist full session to file
-                        vscode.postMessage({ type: 'save_chat', sessionId: activeSessionId, title: deriveTitle(chatMessages), messages: chatMessages, events: eventLog });
+                        var responseText = tcS.streamBuffer || taskResult.summary || '(no response)';
+                        addMessageToSlot(responseText, 'assistant', evSlot);
+                        tcS.streamBuffer = '';
+                        if (evSlot === activeSlot) { streamBuffer = ''; }
+                        addCompletionCardToSlot(taskResult, evSlot);
                         break;
-                    case 'task_error': endStreaming(); setRunning(false); setStatus('connected', 'Ready'); addMessage('Error: ' + (msg.error || 'Unknown'), 'error'); streamBuffer = ''; break;
-                    case 'error': addMessage('Server: ' + (msg.message || msg.error || 'Unknown error'), 'error'); break;
+                    }
+                    case 'task_error': {
+                        var teS = getSlot(evSlot);
+                        endStreamingInSlot(evSlot);
+                        teS.running = false; teS.active = false;
+                        updateTabDot(evSlot, 'idle');
+                        if (evSlot === activeSlot) { setRunning(false); setStatus('connected', 'Ready'); }
+                        addMessageToSlot('Error: ' + (msg.error || 'Unknown'), 'error', evSlot);
+                        teS.streamBuffer = '';
+                        if (evSlot === activeSlot) { streamBuffer = ''; }
+                        break;
+                    }
+                    case 'error': addMessageToSlot('Server: ' + (msg.message || msg.error || 'Unknown error'), 'error', activeSlot); break;
                     case 'model_changed':
                         var mProv = msg.provider || '';
                         var mModel = msg.model || '';
@@ -889,12 +1105,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         }
                         break;
                     case 'file_changed':
-                        addFileChangeCard(msg.path, msg.diff, msg.tool, msg.snapshot, msg.is_new);
-                        eventLog.push({ type: 'file_changed', path: msg.path, diff: (msg.diff || '').substring(0, 1000), tool: msg.tool, snapshot: null, is_new: msg.is_new, ts: Date.now() });
-                        // Also open the file in the editor
-                        vscode.postMessage({ type: 'open_file', path: msg.path });
-                        // Request fresh diagnostics after file change (lint feedback loop)
-                        vscode.postMessage({ type: 'request_diagnostics', path: msg.path });
+                        addFileChangeCardToSlot(msg.path, msg.diff, msg.tool, msg.snapshot, msg.is_new, evSlot);
                         break;
                     case 'file_reverted':
                         // Mark the diff card as reverted
@@ -905,8 +1116,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                         vscode.postMessage({ type: 'open_file', path: msg.path });
                         break;
                     case 'task_artifact':
-                        addArtifactCard(msg.title, msg.content, msg.artifact_type);
-                        eventLog.push({ type: 'artifact', title: msg.title, content: (msg.content || '').substring(0, 2000), artifact_type: msg.artifact_type, ts: Date.now() });
+                        addArtifactCardToSlot(msg.title, msg.content, msg.artifact_type, evSlot);
                         break;
                 }
             });
@@ -946,7 +1156,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 body.textContent = content || '';
                 card.appendChild(header);
                 card.appendChild(body);
-                messagesEl.appendChild(card);
+                var _sc = (slots[activeSlot] && slots[activeSlot].container) || messagesEl; _sc.appendChild(card);
                 scrollToBottom();
                 toggleBtn.addEventListener('click', function(e) {
                     e.stopPropagation();
@@ -1015,7 +1225,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 }
                 card.appendChild(header);
                 card.appendChild(body);
-                messagesEl.appendChild(card);
+                var _sc = (slots[activeSlot] && slots[activeSlot].container) || messagesEl; _sc.appendChild(card);
                 scrollToBottom();
                 toggleBtn.addEventListener('click', function(e) {
                     e.stopPropagation();
@@ -1032,11 +1242,228 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                     vscode.postMessage({ type: 'revert_file', path: filePath, snapshot: snap === undefined ? null : snap });
                 });
             }
+
+            // ─── Per-Slot DOM Functions (each targets the correct slot's container) ───
+            function addMessageToSlot(text, type, slotId) {
+                var slot = getSlot(slotId);
+                var el = document.createElement('div');
+                el.className = 'message ' + type;
+                el.textContent = text;
+                slot.container.appendChild(el);
+                if (slotId === activeSlot) scrollToBottom();
+            }
+
+            function appendStreamInSlot(text, slotId) {
+                var slot = getSlot(slotId);
+                if (!slot.streamingEl) {
+                    slot.streamingEl = document.createElement('div');
+                    slot.streamingEl.className = 'message streaming';
+                    slot.streamingEl.innerHTML = '<span class="stream-text"></span><span class="cursor"></span>';
+                    slot.container.appendChild(slot.streamingEl);
+                    if (slotId === activeSlot) { streamingEl = slot.streamingEl; }
+                }
+                slot.streamingEl.querySelector('.stream-text').textContent += text;
+                if (slotId === activeSlot) scrollToBottom();
+            }
+
+            function endStreamingInSlot(slotId) {
+                var slot = getSlot(slotId);
+                if (slot.streamingEl) {
+                    slot.streamingEl.classList.remove('streaming');
+                    var c = slot.streamingEl.querySelector('.cursor');
+                    if (c) c.remove();
+                    slot.streamingEl = null;
+                    if (slotId === activeSlot) { streamingEl = null; }
+                }
+            }
+
+            function createActionFeedInSlot(slotId) {
+                var slot = getSlot(slotId);
+                slot.stepCount = 0;
+                slot.feedEl = document.createElement('div');
+                slot.feedEl.className = 'action-feed-wrapper';
+                var header = document.createElement('div');
+                header.className = 'action-feed-header';
+                header.innerHTML = '<span class="chevron">▶</span> <span class="feed-title">Action Feed (0 steps)</span>';
+                var copyBtn = document.createElement('button');
+                copyBtn.className = 'copy-btn';
+                copyBtn.textContent = '📋 Copy';
+                copyBtn.addEventListener('click', function(e) { e.stopPropagation(); copyActionFeedInSlot(slotId); });
+                header.appendChild(copyBtn);
+                var feedEl = slot.feedEl;
+                header.addEventListener('click', function() {
+                    feedEl.classList.toggle('expanded');
+                    header.querySelector('.chevron').textContent = feedEl.classList.contains('expanded') ? '▼' : '▶';
+                });
+                slot.feedBody = document.createElement('div');
+                slot.feedBody.className = 'action-feed-body';
+                if (slot.prompt) {
+                    var promptEl = document.createElement('div');
+                    promptEl.className = 'action-feed-prompt';
+                    promptEl.innerHTML = '<span class="action-feed-prompt-label">Prompt:</span>' + esc(slot.prompt);
+                    slot.feedBody.appendChild(promptEl);
+                }
+                slot.feedEl.appendChild(header);
+                slot.feedEl.appendChild(slot.feedBody);
+                slot.container.appendChild(slot.feedEl);
+                if (slotId === activeSlot) {
+                    currentFeedEl = slot.feedEl;
+                    currentFeedBody = slot.feedBody;
+                    stepCount = slot.stepCount;
+                    scrollToBottom();
+                }
+            }
+
+            function addActionInSlot(step, tool, args, slotId) {
+                var slot = getSlot(slotId);
+                slot.stepCount++;
+                if (!slot.feedBody) createActionFeedInSlot(slotId);
+                var titleEl = slot.feedEl.querySelector('.feed-title');
+                if (titleEl) titleEl.textContent = 'Action Feed (' + slot.stepCount + ' steps)';
+                var el = document.createElement('div');
+                el.className = 'action-step';
+                var argsText = args ? Object.keys(args).map(function(k) { return k + ': ' + String(args[k]).slice(0, 80); }).join(', ') : '';
+                el.innerHTML = '<div class="action-header"><span class="step-num">[' + step + ']</span> <span class="tool-name">' + esc(tool || 'thinking') + '</span><span style="flex:1"></span><span class="chevron">+</span></div><div class="action-body">' + esc(argsText) + '</div>';
+                el.querySelector('.action-header').addEventListener('click', function() { el.classList.toggle('expanded'); el.querySelector('.chevron').textContent = el.classList.contains('expanded') ? '-' : '+'; });
+                slot.feedBody.appendChild(el);
+                if (slotId === activeSlot) { stepCount = slot.stepCount; scrollToBottom(); }
+            }
+
+            function updateLastActionInSlot(success, output, error, slotId) {
+                var slot = getSlot(slotId);
+                var container = slot.feedBody || slot.container;
+                var steps = container.querySelectorAll('.action-step');
+                if (!steps.length) return;
+                var last = steps[steps.length - 1];
+                var tn = last.querySelector('.tool-name');
+                if (tn) tn.classList.add(success ? 'success' : 'error');
+                var body = last.querySelector('.action-body');
+                if (body) body.textContent = success ? (output || '(no output)').slice(0, 500) : 'ERROR: ' + (error || 'unknown');
+            }
+
+            function finalizeActionFeedInSlot(result, slotId) {
+                var slot = getSlot(slotId);
+                if (!slot.feedEl) return;
+                slot.answer = result.summary || '';
+                var titleEl = slot.feedEl.querySelector('.feed-title');
+                if (titleEl) titleEl.textContent = 'Action Feed (' + slot.stepCount + ' steps)';
+            }
+
+            function copyActionFeedInSlot(slotId) {
+                var slot = getSlot(slotId);
+                var parts = [];
+                if (slot.prompt) parts.push('Prompt:\\n' + slot.prompt);
+                if (slot.answer) parts.push('Answer:\\n' + slot.answer);
+                var steps = slot.feedBody ? slot.feedBody.querySelectorAll('.action-step') : [];
+                if (steps.length) {
+                    var stepLines = [];
+                    steps.forEach(function(s) {
+                        var h = s.querySelector('.action-header');
+                        var b = s.querySelector('.action-body');
+                        stepLines.push((h ? h.textContent.replace(/[+-]$/, '').trim() : '') + '\\n' + (b ? b.textContent : ''));
+                    });
+                    parts.push('Action Feed (' + steps.length + ' steps):\\n' + stepLines.join('\\n\\n' + '-'.repeat(60) + '\\n\\n'));
+                }
+                var text = parts.join('\\n\\n' + '='.repeat(60) + '\\n\\n');
+                navigator.clipboard.writeText(text);
+            }
+
+            function addCompletionCardToSlot(result, slotId) {
+                var slot = getSlot(slotId);
+                var el = document.createElement('div');
+                var stopped = result.task_complete === false;
+                el.className = 'message ' + (stopped ? 'error' : 'complete');
+                var lines = [];
+                lines.push(stopped ? '⚠ Task Stopped' : '✅ Task Complete');
+                lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━');
+                if (result.summary) lines.push(result.summary);
+                var files = result.files_changed || [];
+                if (files.length) { lines.push(''); lines.push('📁 Files Changed (' + files.length + '):'); files.forEach(function(f) { lines.push('  • ' + f.replace(/[\\\\\\/]/g, '/').split('/').pop()); }); }
+                var actions = result.actions || [];
+                if (actions.length) { var successes = actions.filter(function(a) { return a.success; }).length; lines.push(''); lines.push('⚡ Steps: ' + actions.length + ' | ✅ ' + successes + '/' + actions.length); }
+                var usage = result.usage || {};
+                var inTok = usage.total_input_tokens || 0;
+                var outTok = usage.total_output_tokens || 0;
+                if (inTok || outTok) {
+                    var fmt = function(n) { return n >= 1000 ? (n/1000).toFixed(1) + 'K' : n; };
+                    var tokLine = '🔢 Tokens: ' + fmt(inTok) + ' in / ' + fmt(outTok) + ' out';
+                    if (result.elapsed) { tokLine += ' · ⏱ ' + result.elapsed + 's'; }
+                    lines.push(tokLine);
+                }
+                el.textContent = lines.join('\\n');
+                el.style.whiteSpace = 'pre-wrap';
+                el.style.fontFamily = 'var(--vscode-editor-font-family)';
+                el.style.fontSize = '12px';
+                el.style.lineHeight = '1.6';
+                slot.container.appendChild(el);
+                if (slotId === activeSlot) scrollToBottom();
+            }
+
+            function addArtifactCardToSlot(title, content, artifactType, slotId) {
+                var slot = getSlot(slotId);
+                var card = document.createElement('div');
+                card.className = 'artifact-card';
+                var header = document.createElement('div');
+                header.className = 'artifact-header';
+                var badge = document.createElement('span');
+                badge.className = 'artifact-badge';
+                badge.textContent = (artifactType || 'plan').toUpperCase();
+                var titleSpan = document.createElement('span');
+                titleSpan.className = 'artifact-title';
+                titleSpan.textContent = title || 'Artifact';
+                var actions = document.createElement('div');
+                actions.className = 'artifact-actions';
+                var toggleBtn = document.createElement('button');
+                toggleBtn.textContent = '>';
+                var copyBtn = document.createElement('button');
+                copyBtn.textContent = 'Copy';
+                actions.appendChild(toggleBtn);
+                actions.appendChild(copyBtn);
+                header.appendChild(badge);
+                header.appendChild(titleSpan);
+                header.appendChild(actions);
+                var body = document.createElement('div');
+                body.className = 'artifact-body';
+                body.textContent = content || '';
+                card.appendChild(header);
+                card.appendChild(body);
+                slot.container.appendChild(card);
+                if (slotId === activeSlot) scrollToBottom();
+                toggleBtn.addEventListener('click', function(e) { e.stopPropagation(); body.style.display = body.style.display === 'none' ? 'block' : 'none'; toggleBtn.textContent = body.style.display === 'none' ? '>' : 'v'; });
+                copyBtn.addEventListener('click', function(e) { e.stopPropagation(); navigator.clipboard.writeText((title || '') + '\\n' + (content || '')); copyBtn.textContent = '✓'; setTimeout(function() { copyBtn.textContent = 'Copy'; }, 1500); });
+            }
+
+            function addFileChangeCardToSlot(path, diff, tool, snapshot, isNew, slotId) {
+                var slot = getSlot(slotId);
+                // Create a simple file change notification in the slot container
+                var card = document.createElement('div');
+                card.className = 'diff-card';
+                card.dataset.path = path || '';
+                var basename = (path || '').replace(/[\\\\\\/]/g, '/').split('/').pop() || path;
+                var toolLabel = tool || 'file_write';
+                var header = document.createElement('div');
+                header.className = 'diff-header';
+                header.innerHTML = '<span class="diff-file">' + esc(basename) + ' (' + esc(toolLabel) + ')</span>';
+                var body = document.createElement('div');
+                body.className = 'diff-body';
+                body.style.display = 'none';
+                body.textContent = diff || '(no diff)';
+                card.appendChild(header);
+                card.appendChild(body);
+                slot.container.appendChild(card);
+                header.addEventListener('click', function() { body.style.display = body.style.display === 'none' ? 'block' : 'none'; });
+                if (slotId === activeSlot) {
+                    scrollToBottom();
+                    vscode.postMessage({ type: 'open_file', path: path });
+                    vscode.postMessage({ type: 'request_diagnostics', path: path });
+                }
+            }
             function addMessage(text, type, skipSave) {
                 var el = document.createElement('div');
                 el.className = 'message ' + type;
                 el.textContent = text;
-                messagesEl.appendChild(el);
+                var targetContainer = (slots[activeSlot] && slots[activeSlot].container) || messagesEl;
+                targetContainer.appendChild(el);
                 scrollToBottom();
                 if (!skipSave && (type === 'user' || type === 'complete' || type === 'error' || type === 'assistant')) {
                     chatMessages.push({ type: type, text: text, ts: Date.now() });
@@ -1082,7 +1509,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 
                 currentFeedEl.appendChild(header);
                 currentFeedEl.appendChild(currentFeedBody);
-                messagesEl.appendChild(currentFeedEl);
+                var _sc = (slots[activeSlot] && slots[activeSlot].container) || messagesEl; _sc.appendChild(currentFeedEl);
                 scrollToBottom();
             }
 
@@ -1200,7 +1627,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
                 el.style.fontFamily = 'var(--vscode-editor-font-family)';
                 el.style.fontSize = '12px';
                 el.style.lineHeight = '1.6';
-                messagesEl.appendChild(el);
+                var _sc = (slots[activeSlot] && slots[activeSlot].container) || messagesEl; _sc.appendChild(el);
                 scrollToBottom();
             }
 
