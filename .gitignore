@@ -25,3 +25,12 @@ product.overrides.json
 # Proton9 agent secrets
 agent/.env
 
+
+# Agent runtime dirs (symlinked from Proton9 — tracked there)
+agent/core/
+agent/tools/
+agent/config/
+agent/proton9.py
+agent/requirements.txt
+agent/swe_bench_harness.py
+agent/.env
