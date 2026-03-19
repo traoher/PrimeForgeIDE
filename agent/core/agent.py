@@ -206,6 +206,7 @@ class Agent(PlannerMixin, RemediationMixin):
         self.exit_on_first_successful_verification = bool(
             agent_cfg.get("exit_on_first_successful_verification", True)
         )
+        self.preloaded_rule_files = agent_cfg.get("preloaded_rule_files", []) or []
         self.cancel_requested = False
         self.preloaded_rule_sources = self._discover_rule_sources()
 
@@ -328,6 +329,11 @@ class Agent(PlannerMixin, RemediationMixin):
         self.tools.register(PlanTool())
         self.tools.register(ImageGenerateTool())
         self.tools.register(SemanticSearchTool())
+
+        # Director tools — dispatch sub-tasks to parallel agent instances
+        from tools.dispatch import DispatchTaskTool, CheckDispatchTool
+        self.tools.register(DispatchTaskTool(working_dir=self.working_dir))
+        self.tools.register(CheckDispatchTool())
 
         # Load dynamic plugins (opt-in; defaults to off for safety)
         if self.plugins_auto_load:
@@ -887,12 +893,14 @@ class Agent(PlannerMixin, RemediationMixin):
 
                 # Strict exit gate: once we have changed files and verification succeeds, stop immediately.
                 # Verification must actually reference a changed file to count (prevents `dir` or `python --version` from triggering exit).
+                # Additional guard: output must not contain error indicators (prevents false positives from broken scripts).
                 if (
                     self.exit_on_first_successful_verification
                     and tool_name in self.verification_tools
                     and result.success
                     and bool(self.log.files_changed)
                     and self._verification_targets_changed_files(tool_name, tool_args, result)
+                    and not self._output_has_error_indicators(str(result))
                 ):
                     task_complete = True
                     final_summary = (
@@ -1475,6 +1483,20 @@ class Agent(PlannerMixin, RemediationMixin):
             return True
         return False
 
+    def _output_has_error_indicators(self, output: str) -> bool:
+        """Check if verification output contains error patterns that indicate failure."""
+        if not output:
+            return False
+        output_lower = output.lower()
+        error_indicators = [
+            "traceback (most recent", "syntaxerror", "indentationerror",
+            "nameerror", "typeerror", "attributeerror", "importerror",
+            "modulenotfounderror", "filenotfounderror", "valueerror",
+            "runtimeerror", "assert failed", "assertion error",
+            "fatal:", "error:", "failed to", "panic:",
+        ]
+        return any(indicator in output_lower for indicator in error_indicators)
+
     # Methods _is_interactive_block_error through _extract_best_effort_summary
     # are now inherited from RemediationMixin (core/agent_remediation.py)
 
@@ -1538,7 +1560,7 @@ class Agent(PlannerMixin, RemediationMixin):
             return messages  # Nothing to compact
 
         # Try smart compaction via fast_llm
-        fast_llm = getattr(self, '_fast_llm', None)
+        fast_llm = getattr(self, 'fast_llm', None)
         if fast_llm:
             try:
                 # Build a summary of what happened in the middle messages

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "updated_at": "2026-03-18T12:54:30.708601",
+  "updated_at": "2026-03-19T09:09:20.871846",
   "day": {
     "2026-03-14": {
       "_total": {
@@ -92,24 +92,61 @@
     },
     "2026-03-18": {
       "_total": {
-        "input_tokens": 89240,
-        "output_tokens": 13565,
-        "calls": 101
+        "input_tokens": 2111110,
+        "output_tokens": 124031,
+        "calls": 273
       },
       "deepseek-chat": {
-        "input_tokens": 88797,
-        "output_tokens": 9890,
-        "calls": 89
+        "input_tokens": 227085,
+        "output_tokens": 14895,
+        "calls": 111
       },
       "gemini-3-flash-preview": {
-        "input_tokens": 162,
-        "output_tokens": 3578,
-        "calls": 6
+        "input_tokens": 1935,
+        "output_tokens": 6213,
+        "calls": 10
       },
       "gemini-3.1-flash-image-preview": {
-        "input_tokens": 281,
-        "output_tokens": 97,
-        "calls": 6
+        "input_tokens": 304993,
+        "output_tokens": 66548,
+        "calls": 23
+      },
+      "gemini-pro-latest": {
+        "input_tokens": 589400,
+        "output_tokens": 4819,
+        "calls": 38
+      },
+      "gemini-2.5-pro": {
+        "input_tokens": 357069,
+        "output_tokens": 14118,
+        "calls": 31
+      },
+      "deepseek-reasoner": {
+        "input_tokens": 630628,
+        "output_tokens": 17438,
+        "calls": 60
+      }
+    },
+    "2026-03-19": {
+      "_total": {
+        "input_tokens": 1566596,
+        "output_tokens": 65388,
+        "calls": 247
+      },
+      "deepseek-reasoner": {
+        "input_tokens": 433448,
+        "output_tokens": 13492,
+        "calls": 61
+      },
+      "gemini-3-flash-preview": {
+        "input_tokens": 1612,
+        "output_tokens": 48,
+        "calls": 2
+      },
+      "gemini-2.5-pro": {
+        "input_tokens": 1131536,
+        "output_tokens": 51848,
+        "calls": 184
       }
     }
   },
@@ -143,19 +180,19 @@
     },
     "2026-W12": {
       "_total": {
-        "input_tokens": 870447,
-        "output_tokens": 28214,
-        "calls": 229
+        "input_tokens": 4458913,
+        "output_tokens": 204068,
+        "calls": 648
       },
       "deepseek-chat": {
-        "input_tokens": 474297,
-        "output_tokens": 18170,
-        "calls": 151
+        "input_tokens": 612585,
+        "output_tokens": 23175,
+        "calls": 173
       },
       "gemini-3.1-flash-image-preview": {
-        "input_tokens": 620,
-        "output_tokens": 242,
-        "calls": 12
+        "input_tokens": 305332,
+        "output_tokens": 66693,
+        "calls": 29
       },
       "claude-3-7-sonnet-20250219": {
         "input_tokens": 395126,
@@ -168,23 +205,38 @@
         "calls": 4
       },
       "gemini-3-flash-preview": {
-        "input_tokens": 162,
-        "output_tokens": 3578,
-        "calls": 6
+        "input_tokens": 3547,
+        "output_tokens": 6261,
+        "calls": 12
+      },
+      "gemini-pro-latest": {
+        "input_tokens": 589400,
+        "output_tokens": 4819,
+        "calls": 38
+      },
+      "gemini-2.5-pro": {
+        "input_tokens": 1488605,
+        "output_tokens": 65966,
+        "calls": 215
+      },
+      "deepseek-reasoner": {
+        "input_tokens": 1064076,
+        "output_tokens": 30930,
+        "calls": 121
       }
     }
   },
   "month": {
     "2026-03": {
       "_total": {
-        "input_tokens": 2082483,
-        "output_tokens": 49334,
-        "calls": 613
+        "input_tokens": 5670949,
+        "output_tokens": 225188,
+        "calls": 1032
       },
       "deepseek-chat": {
-        "input_tokens": 1479587,
-        "output_tokens": 27669,
-        "calls": 372
+        "input_tokens": 1617875,
+        "output_tokens": 32674,
+        "calls": 394
       },
       "gemini-2.5-flash": {
         "input_tokens": 186420,
@@ -202,9 +254,9 @@
         "calls": 1
       },
       "gemini-3.1-flash-image-preview": {
-        "input_tokens": 620,
-        "output_tokens": 242,
-        "calls": 12
+        "input_tokens": 305332,
+        "output_tokens": 66693,
+        "calls": 29
       },
       "claude-3-7-sonnet-20250219": {
         "input_tokens": 395126,
@@ -217,22 +269,37 @@
         "calls": 4
       },
       "gemini-3-flash-preview": {
-        "input_tokens": 162,
-        "output_tokens": 3578,
-        "calls": 6
+        "input_tokens": 3547,
+        "output_tokens": 6261,
+        "calls": 12
+      },
+      "gemini-pro-latest": {
+        "input_tokens": 589400,
+        "output_tokens": 4819,
+        "calls": 38
+      },
+      "gemini-2.5-pro": {
+        "input_tokens": 1488605,
+        "output_tokens": 65966,
+        "calls": 215
+      },
+      "deepseek-reasoner": {
+        "input_tokens": 1064076,
+        "output_tokens": 30930,
+        "calls": 121
       }
     }
   },
   "lifetime": {
     "_total": {
-      "input_tokens": 2082483,
-      "output_tokens": 49334,
-      "calls": 613
+      "input_tokens": 5670949,
+      "output_tokens": 225188,
+      "calls": 1032
     },
     "deepseek-chat": {
-      "input_tokens": 1479587,
-      "output_tokens": 27669,
-      "calls": 372
+      "input_tokens": 1617875,
+      "output_tokens": 32674,
+      "calls": 394
     },
     "gemini-2.5-flash": {
       "input_tokens": 186420,
@@ -250,9 +317,9 @@
       "calls": 1
     },
     "gemini-3.1-flash-image-preview": {
-      "input_tokens": 620,
-      "output_tokens": 242,
-      "calls": 12
+      "input_tokens": 305332,
+      "output_tokens": 66693,
+      "calls": 29
     },
     "claude-3-7-sonnet-20250219": {
       "input_tokens": 395126,
@@ -265,9 +332,24 @@
       "calls": 4
     },
     "gemini-3-flash-preview": {
-      "input_tokens": 162,
-      "output_tokens": 3578,
-      "calls": 6
+      "input_tokens": 3547,
+      "output_tokens": 6261,
+      "calls": 12
+    },
+    "gemini-pro-latest": {
+      "input_tokens": 589400,
+      "output_tokens": 4819,
+      "calls": 38
+    },
+    "gemini-2.5-pro": {
+      "input_tokens": 1488605,
+      "output_tokens": 65966,
+      "calls": 215
+    },
+    "deepseek-reasoner": {
+      "input_tokens": 1064076,
+      "output_tokens": 30930,
+      "calls": 121
     }
   }
 }

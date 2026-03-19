@@ -50,17 +50,34 @@ Propose solution approaches. Pick the saddle point: maximum gain, minimum change
 - If multiple approaches exist, explicitly state why you picked this one.
 - **GATE: The approach satisfies ALL success criteria from Phase 2.**
 
-### Phase 4: DETAIL
-Write the exact implementation plan. This is the blueprint.
+### Phase 4: DETAIL — Divide & Conquer
+Write the exact implementation plan, then DECOMPOSE it.
+
+**Step 1 — Survey (see the forest):**
 - Use `plan(title="P4: Implementation Details", ...)` to emit:
   - For each file: exact functions/lines to change, with before/after pseudocode.
-- **GATE: You could hand this plan to another engineer and they'd implement it identically.**
+  - Total scope: how many files, how many independent pieces.
+
+**Step 2 — Decompose (plan the cuts):**
+Ask: "Can any parts be done INDEPENDENTLY without the others?"
+- If YES → list the independent sub-tasks. Each must be self-contained:
+  a sentence a junior engineer could execute without extra context.
+- If NO → the task is atomic, proceed directly to Phase 5.
+
+**Step 3 — Dispatch (send the workers):**
+For each independent sub-task, call `dispatch_task(subtask="...")`.
+Keep the CRITICAL PATH for yourself — the one piece everything else depends on.
+
+**GATE: Your plan is split into the smallest independent pieces possible.
+You work on the core. Dispatched agents handle the rest in parallel.**
 
 ### Phase 5: BUILD
-Execute the plan. Write/edit code.
+Execute YOUR piece of the plan. Write/edit code.
 - `file_read` before editing — never edit blind.
 - Build incrementally: one component at a time.
 - Follow the plan from Phase 4. If you deviate, note why.
+- If you dispatched sub-tasks, use `check_dispatch` periodically.
+  When dispatched work returns, review it — don't trust blindly.
 
 ### Phase 6: TEST
 Verify the code works. This is NOT optional.

@@ -1,6 +1,6 @@
 llm:
-  provider: deepseek
-  model: deepseek-chat
+  provider: gemini
+  model: gemini-2.5-pro
   fallback_provider: deepseek
   call_timeout_seconds: 180
   throttle_max_wait_seconds: 45
@@ -43,7 +43,7 @@ context:
   max_methods_per_ensemble: 8
   topic_shift_overlap_threshold: 0
 safety:
-  max_iterations: 50
+  max_iterations: 200
   max_file_size_mb: 1
   error_loop_threshold: 3
   command_timeout_seconds: 120

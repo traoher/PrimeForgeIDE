@@ -82,7 +82,7 @@ class SemanticSearchTool(BaseTool):
                 for i in range(0, len(texts), 100):
                     batch = texts[i:i+100]
                     result = client.models.embed_content(
-                        model="text-embedding-004",
+                        model="gemini-embedding-001",
                         contents=batch,
                     )
                     all_embeddings.extend([e.values for e in result.embeddings])
@@ -100,7 +100,7 @@ class SemanticSearchTool(BaseTool):
         # Embed the query
         try:
             query_result = client.models.embed_content(
-                model="text-embedding-004",
+                model="gemini-embedding-001",
                 contents=[query],
             )
             query_embedding = query_result.embeddings[0].values

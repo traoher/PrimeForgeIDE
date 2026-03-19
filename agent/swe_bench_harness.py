@@ -98,6 +98,8 @@ def run_proton9_agent(task: str, working_dir: str, timeout_seconds: int = 300) -
     """Run Proton9 agent on a task and return the result."""
     from core.agent import Agent
 
+    # Save CWD — Agent.__init__ calls os.chdir() which corrupts the process CWD
+    original_cwd = os.getcwd()
     agent = Agent(working_dir=working_dir)
 
     try:
@@ -105,15 +107,22 @@ def run_proton9_agent(task: str, working_dir: str, timeout_seconds: int = 300) -
         return result
     except Exception as e:
         return {"summary": f"Agent error: {e}", "task_complete": False, "files_changed": []}
+    finally:
+        # CRITICAL: restore CWD so get_patch() and subsequent runs work correctly
+        os.chdir(original_cwd)
 
 
 def get_patch(repo_dir: str) -> str:
     """Get the git diff (patch) produced by the agent."""
+    # CRITICAL: verify .git exists in repo_dir to prevent walking up to parent repo
+    git_dir = os.path.join(repo_dir, ".git")
+    if not os.path.exists(git_dir):
+        print(f"  ⚠️  No .git in {repo_dir} — cannot capture patch")
+        return ""
     try:
         result = subprocess.run(
-            ["git", "diff"],
+            ["git", "--git-dir", git_dir, "--work-tree", repo_dir, "diff"],
             capture_output=True, text=True, timeout=30,
-            cwd=repo_dir,
         )
         patch = result.stdout.strip()
         # Normalize Windows line endings → Unix (SWE-bench evaluates in Linux Docker)
