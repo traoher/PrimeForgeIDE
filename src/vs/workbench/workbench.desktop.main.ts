@@ -177,6 +177,9 @@ import './contrib/emergencyAlert/electron-sandbox/emergencyAlert.contribution.js
 // MCP
 import './contrib/mcp/electron-sandbox/mcp.contribution.js';
 
+// Proton9
+import './contrib/proton9/electron-sandbox/proton9.contribution.js';
+
 //#endregion
 
 
