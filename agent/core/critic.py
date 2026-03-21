@@ -53,7 +53,7 @@ class CriticEngine:
     """
 
     def __init__(self, llm: LLMGateway = None):
-        self.llm = llm or LLMGateway(provider="gemini")
+        self.llm = llm or LLMGateway(provider="deepseek")
 
     @staticmethod
     def extract_patterns(actions: list[dict]) -> list[str]:

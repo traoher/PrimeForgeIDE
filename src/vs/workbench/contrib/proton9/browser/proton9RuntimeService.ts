@@ -56,7 +56,7 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 	private readonly backendClient = this._register(new P9BackendClient());
 	private readonly runtimeStore: P9RuntimeStore;
 	private readonly activeAssistantEntryIds = new Map<string, string>();
-	private readonly connectionState: IP9ConnectionState = { connected: false };
+	private readonly connectionState: IP9ConnectionState = { connected: false, connecting: true };
 	private lastTool: string | undefined;
 	private lastCommand: string | undefined;
 	private lastResourcePath: string | undefined;
@@ -82,7 +82,12 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		this._register(this.backendClient.onDidChangeConnection(connected => {
 			this.connectionState.connected = connected;
 			this.connectionState.lastEventAt = Date.now();
-			if (!connected) {
+			if (connected) {
+				// Successfully connected — clear connecting state and any errors
+				this.connectionState.connecting = false;
+				this.connectionState.lastError = undefined;
+			} else if (!this.connectionState.connecting) {
+				// Only show disconnect error if we're NOT in the initial auto-connect phase
 				this.connectionState.lastError = this.connectionState.lastError ?? 'Disconnected from Proton9 backend.';
 			}
 			this._onDidChangeState.fire({ kind: 'connection' });
@@ -94,6 +99,42 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 			}
 			this.handleBackendEvent(event.type, event.data);
 		}));
+
+		// Auto-connect to the backend on startup (with retries for server startup delay)
+		this.scheduleAutoConnect();
+	}
+
+	private scheduleAutoConnect(): void {
+		const INITIAL_DELAY_MS = 4000;
+		const RETRY_DELAY_MS = 5000;
+		const MAX_RETRIES = 3;
+		let retries = 0;
+		let disposed = false;
+
+		this._register({ dispose: () => { disposed = true; } });
+
+		const attempt = () => {
+			if (disposed || this.connectionState.connected || retries >= MAX_RETRIES) {
+				// If all retries exhausted without connecting, end the connecting phase
+				if (!this.connectionState.connected && retries >= MAX_RETRIES) {
+					this.connectionState.connecting = false;
+					this._onDidChangeState.fire({ kind: 'connection' });
+				}
+				return;
+			}
+			retries++;
+			this.connect().catch(() => {
+				if (!disposed && retries < MAX_RETRIES) {
+					setTimeout(attempt, RETRY_DELAY_MS);
+				} else if (!disposed && retries >= MAX_RETRIES) {
+					// All retries exhausted
+					this.connectionState.connecting = false;
+					this._onDidChangeState.fire({ kind: 'connection' });
+				}
+			});
+		};
+
+		setTimeout(attempt, INITIAL_DELAY_MS);
 	}
 
 	getSessions(): readonly IP9NativeSession[] {
@@ -250,12 +291,13 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 	}
 
 	async openResource(path: string): Promise<void> {
-		if (!path) {
+		const normalizedPath = this.normalizeResourcePath(path);
+		if (!normalizedPath) {
 			return;
 		}
 
 		await this.editorService.openEditor({
-			resource: URI.file(path),
+			resource: URI.file(normalizedPath),
 			options: { pinned: true },
 		});
 	}
@@ -332,7 +374,6 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 				}
 				this.p9SessionService.updateSessionStatus(session.tabId, 'idle');
 				this.finishAssistantEntry(session.tabId);
-				this.appendTranscriptEntry(session.tabId, 'summary', String(data?.result?.summary ?? 'Task complete.'));
 				this._onDidChangeState.fire({ kind: 'sessions', tabId: session.tabId });
 				break;
 			case 'slot_complete':
@@ -477,16 +518,42 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		for (const key of directKeys) {
 			const value = args?.[key];
 			if (typeof value === 'string' && this.looksLikePath(value)) {
-				return value;
+				return this.normalizeResourcePath(value);
 			}
 		}
 
-		const pathMatch = detail.match(/([A-Za-z]:[\\/][^:"|<>\r\n]+|\/[^:"|<>\r\n]+)/);
-		return pathMatch?.[1];
+		// Try specific "File written: <path> (<N> chars)" pattern first
+		const fileWrittenMatch = detail.match(/File written:\s*(.+?)(?:\s*\(\d+\s*chars?\)|\s*$)/);
+		if (fileWrittenMatch?.[1]) {
+			return this.normalizeResourcePath(fileWrittenMatch[1]);
+		}
+
+		// General path match — stop before parenthesized metadata
+		const pathMatch = detail.match(/([A-Za-z]:[\\/][^:"|<>\r\n(]+|[/][^:"|<>\r\n(]+)/);
+		return this.normalizeResourcePath(pathMatch?.[1]);
 	}
 
 	private looksLikePath(value: string): boolean {
 		return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith('/');
+	}
+
+	private normalizeResourcePath(value: string | undefined): string | undefined {
+		if (!value) {
+			return undefined;
+		}
+
+		let normalized = value.trim();
+		normalized = normalized.replace(/^File written:\s*/i, '');
+		normalized = normalized.replace(/^["'`]+|["'`]+$/g, '');
+		normalized = normalized.replace(/\s*\(\d+\s*chars?\)\s*$/i, '');
+		normalized = normalized.replace(/[.,;:]+$/g, '');
+		normalized = normalized.trim();
+
+		if (!this.looksLikePath(normalized)) {
+			return undefined;
+		}
+
+		return normalized;
 	}
 
 	private clearSessionMarkers(tabId: string): void {
@@ -551,7 +618,10 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		const message = this.errorMessage(error);
 		this.connectionState.lastError = message;
 		this._onDidChangeState.fire({ kind: 'connection' });
-		this.notificationService.error(message);
+		// Suppress notification toast during initial auto-connect phase
+		if (!this.connectionState.connecting) {
+			this.notificationService.error(message);
+		}
 	}
 
 	private errorMessage(error: unknown): string {

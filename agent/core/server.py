@@ -43,6 +43,7 @@ class ForgeServer:
         self.port = port
         self.clients: set = set()
         self.client_workdirs: dict = {}
+        self.workspace_dir = os.getcwd()
         self.client_session_keys: dict = {}
         self.config = self._load_config()
 
@@ -309,7 +310,18 @@ class ForgeServer:
             async for message in websocket:
                 try:
                     data = json.loads(message)
-                    await self.handle_message(data, websocket)
+                    try:
+                        await self.handle_message(data, websocket)
+                    except Exception as e:
+                        tb = traceback.format_exc()
+                        print(f"  [WS] handle_message error: {e}\n{tb}")
+                        try:
+                            await websocket.send(json.dumps({
+                                "type": "error",
+                                "message": f"Server error: {str(e)}",
+                            }))
+                        except Exception:
+                            pass
                 except json.JSONDecodeError:
                     await websocket.send(json.dumps({
                         "type": "error", "message": "Invalid JSON"

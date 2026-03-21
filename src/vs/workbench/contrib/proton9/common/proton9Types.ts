@@ -86,6 +86,7 @@ export interface IP9SessionRuntimeState {
 
 export interface IP9ConnectionState {
 	connected: boolean;
+	connecting?: boolean;
 	lastError?: string;
 	lastEventAt?: number;
 }

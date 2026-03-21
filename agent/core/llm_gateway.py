@@ -848,11 +848,11 @@ class LLMGateway:
     Supports Gemini, OpenAI (DeepSeek, Qwen), and Anthropic models interchangeably.
     """
 
-    FALLBACK_ORDER = ["gemini", "deepseek", "openai", "anthropic"]
+    FALLBACK_ORDER = ["deepseek", "openai", "anthropic", "gemini"]
 
     def __init__(
         self,
-        provider: str = "gemini",
+        provider: str = "deepseek",
         model: str = None,
         call_timeout_seconds: int | float | None = None,
         throttle_max_wait_seconds: int | float | None = None,

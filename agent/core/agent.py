@@ -171,7 +171,7 @@ class Agent(PlannerMixin, RemediationMixin):
                 print(f"Warning: Could not load config: {e}")
 
         # Priority: constructor arg > YAML config > env var > default
-        final_provider = provider or llm_config.get("provider") or os.getenv("Proton9_PROVIDER") or "gemini"
+        final_provider = provider or llm_config.get("provider") or os.getenv("Proton9_PROVIDER") or "deepseek"
         final_model = model or llm_config.get("model") or os.getenv("Proton9_MODEL")
         llm_fallback_provider = llm_config.get("fallback_provider")
         llm_call_timeout_seconds = llm_config.get("call_timeout_seconds")

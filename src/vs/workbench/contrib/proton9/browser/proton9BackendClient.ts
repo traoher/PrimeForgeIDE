@@ -14,6 +14,7 @@ export interface IP9BackendEvent {
 
 export class P9BackendClient extends Disposable {
 	private static readonly DEFAULT_URL = 'ws://localhost:9321';
+	private static readonly READY_MESSAGE = 'Proton9 server ready';
 
 	private socket: WebSocket | undefined;
 	private readonly _onDidReceiveEvent = this._register(new Emitter<IP9BackendEvent>());
@@ -21,44 +22,67 @@ export class P9BackendClient extends Disposable {
 
 	private readonly _onDidChangeConnection = this._register(new Emitter<boolean>());
 	readonly onDidChangeConnection = this._onDidChangeConnection.event;
+	private handshakeVerified = false;
 
 	async ensureConnected(): Promise<void> {
-		if (this.socket?.readyState === WebSocket.OPEN) {
+		if (this.socket?.readyState === WebSocket.OPEN && this.handshakeVerified) {
 			return;
 		}
 
 		if (this.socket?.readyState === WebSocket.CONNECTING) {
 			return new Promise((resolve, reject) => {
-				const onOpen = () => {
+				const onConnected = (event: IP9BackendEvent) => {
+					if (event.type !== 'connected') {
+						return;
+					}
 					cleanup();
 					resolve();
 				};
-				const onError = () => {
+				const onError = (event: IP9BackendEvent) => {
+					if (event.type !== 'error') {
+						return;
+					}
 					cleanup();
-					reject(new Error('Failed to connect to Proton9 backend.'));
+					reject(new Error(String(event.data?.message ?? 'Failed to connect to Proton9 backend.')));
 				};
 				const cleanup = () => {
-					this.socket?.removeEventListener('open', onOpen);
-					this.socket?.removeEventListener('error', onError);
+					connectedDisposable.dispose();
+					errorDisposable.dispose();
 				};
-				this.socket?.addEventListener('open', onOpen);
-				this.socket?.addEventListener('error', onError);
+				const connectedDisposable = this.onDidReceiveEvent(onConnected);
+				const errorDisposable = this.onDidReceiveEvent(onError);
 			});
 		}
 
+		this.handshakeVerified = false;
 		this.socket = new WebSocket(P9BackendClient.DEFAULT_URL);
-		this.socket.addEventListener('open', () => {
-			this._onDidChangeConnection.fire(true);
-		});
 		this.socket.addEventListener('close', () => {
+			this.handshakeVerified = false;
 			this._onDidChangeConnection.fire(false);
 		});
 		this.socket.addEventListener('error', () => {
+			this.handshakeVerified = false;
 			this._onDidChangeConnection.fire(false);
 		});
 		this.socket.addEventListener('message', event => {
 			try {
 				const data = JSON.parse(String(event.data));
+				if (String(data?.type ?? '') === 'connected') {
+					const readyMessage = String(data?.message ?? '');
+					if (!this.isCompatibleBackend(readyMessage)) {
+						const message = `Incompatible backend on port 9321: ${readyMessage || 'unknown server'}. Start Proton9/core/server.py, not PrimeForge/core/server.py.`;
+						this.handshakeVerified = false;
+						this._onDidReceiveEvent.fire({
+							type: 'error',
+							data: { type: 'error', message },
+						});
+						this.socket?.close(1000, 'incompatible backend');
+						this._onDidChangeConnection.fire(false);
+						return;
+					}
+					this.handshakeVerified = true;
+					this._onDidChangeConnection.fire(true);
+				}
 				this._onDidReceiveEvent.fire({
 					type: String(data?.type ?? 'unknown'),
 					data,
@@ -72,20 +96,32 @@ export class P9BackendClient extends Disposable {
 		});
 
 		return new Promise((resolve, reject) => {
-			const onOpen = () => {
+			const onConnected = (event: IP9BackendEvent) => {
+				if (event.type !== 'connected') {
+					return;
+				}
 				cleanup();
 				resolve();
 			};
-			const onError = () => {
+			const onError = (event: IP9BackendEvent) => {
+				if (event.type !== 'error') {
+					return;
+				}
 				cleanup();
-				reject(new Error('Failed to connect to Proton9 backend.'));
+				reject(new Error(String(event.data?.message ?? 'Failed to connect to Proton9 backend.')));
+			};
+			const onClose = () => {
+				cleanup();
+				reject(new Error('Disconnected from Proton9 backend.'));
 			};
 			const cleanup = () => {
-				this.socket?.removeEventListener('open', onOpen);
-				this.socket?.removeEventListener('error', onError);
+				connectedDisposable.dispose();
+				errorDisposable.dispose();
+				this.socket?.removeEventListener('close', onClose);
 			};
-			this.socket?.addEventListener('open', onOpen);
-			this.socket?.addEventListener('error', onError);
+			const connectedDisposable = this.onDidReceiveEvent(onConnected);
+			const errorDisposable = this.onDidReceiveEvent(onError);
+			this.socket?.addEventListener('close', onClose);
 		});
 	}
 
@@ -123,6 +159,10 @@ export class P9BackendClient extends Disposable {
 			throw new Error('Proton9 backend is not connected.');
 		}
 		this.socket.send(JSON.stringify(payload));
+	}
+
+	private isCompatibleBackend(readyMessage: string): boolean {
+		return readyMessage === P9BackendClient.READY_MESSAGE || /proton9/i.test(readyMessage);
 	}
 
 	private createRunTaskPayload(session: IP9NativeSession, task: string): IP9RunTaskPayload {

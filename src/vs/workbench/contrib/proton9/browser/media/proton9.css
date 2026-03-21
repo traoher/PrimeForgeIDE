@@ -11,18 +11,26 @@
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
+	height: 100%;
+	min-height: 0;
 }
 
 .proton9-pane-header,
 .proton9-toolbar,
-.proton9-session-row {
+.proton9-session-row,
+.proton9-master-header,
+.proton9-master-composer-footer,
+.proton9-status-row {
 	display: flex;
 	align-items: center;
 	flex-wrap: wrap;
 	gap: 8px;
 }
 
-.proton9-pane-header {
+.proton9-pane-header,
+.proton9-master-header,
+.proton9-master-composer-footer,
+.proton9-status-row {
 	justify-content: space-between;
 }
 
@@ -39,14 +47,6 @@
 .proton9-title-row h3,
 .proton9-title-row .proton9-card-title {
 	margin: 0;
-}
-
-.proton9-title-label {
-	min-width: 0;
-	flex: 0 1 auto;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .proton9-session-tabs {
@@ -110,15 +110,17 @@
 }
 
 .proton9-card,
-.proton9-session-item,
 .proton9-section,
 .proton9-action-entry,
-.proton9-transcript-entry {
+.proton9-message-bubble,
+.proton9-code-block,
+.proton9-master-shell {
 	border: 1px solid var(--vscode-panel-border, transparent);
 	border-radius: 10px;
 	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
 }
 
+.proton9-master-shell,
 .proton9-card,
 .proton9-section {
 	padding: 12px;
@@ -127,8 +129,26 @@
 	gap: 10px;
 }
 
+.proton9-master-shell {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.proton9-master-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px 12px;
+	padding-bottom: 8px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
 .proton9-card-title {
 	font-weight: 600;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .proton9-meta-line,
@@ -153,9 +173,17 @@
 	gap: 8px;
 }
 
+.proton9-master-composer {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding-top: 10px;
+	border-top: 1px solid var(--vscode-panel-border, transparent);
+}
+
 .proton9-input {
 	width: 100%;
-	min-height: 100px;
+	min-height: 96px;
 	resize: vertical;
 	border-radius: 8px;
 	padding: 10px;
@@ -164,6 +192,9 @@
 	color: var(--vscode-input-foreground);
 	font: inherit;
 	box-sizing: border-box;
+	user-select: text;
+	-webkit-user-select: text;
+	cursor: text;
 }
 
 .proton9-transcript-list,
@@ -171,34 +202,33 @@
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	margin-top: 8px;
 }
 
-.proton9-transcript-entry,
-.proton9-action-entry,
-.proton9-session-item {
-	border-radius: 8px;
-	padding: 8px 10px;
-	background: color-mix(in srgb, var(--vscode-sideBarSectionHeader-background, transparent) 65%, transparent);
+.proton9-transcript-viewport {
+	flex: 1;
+	min-height: 220px;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding-right: 2px;
+	user-select: text;
+	-webkit-user-select: text;
 }
 
-.proton9-transcript-user {
-	background: color-mix(in srgb, var(--vscode-button-background) 16%, transparent);
+.proton9-message {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 4px 0;
+	user-select: text;
+	-webkit-user-select: text;
 }
 
-.proton9-transcript-assistant {
-	background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 55%, transparent);
+.proton9-message-error {
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-editorError-foreground));
 }
 
-.proton9-transcript-info {
-	background: color-mix(in srgb, var(--vscode-editorInfo-background) 35%, transparent);
-}
-
-.proton9-transcript-summary {
-	background: color-mix(in srgb, var(--vscode-editorHint-background) 35%, transparent);
-}
-
-.proton9-transcript-error,
 .proton9-action-result {
 	background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 38%, transparent);
 }
@@ -216,36 +246,142 @@
 }
 
 .proton9-entry-kind {
-	padding: 2px 6px;
-	border-radius: 999px;
-	background: var(--vscode-badge-background);
-	color: var(--vscode-badge-foreground);
+	font-weight: 700;
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.proton9-kind-user {
+	color: #00cccc;
+}
+
+.proton9-kind-assistant {
+	color: #4488ff;
+}
+
+.proton9-kind-error {
+	color: var(--vscode-editorError-foreground, #f44747);
+}
+
+.proton9-kind-summary {
+	color: var(--vscode-descriptionForeground);
 }
 
 .proton9-action-label {
 	font-weight: 600;
 }
 
+.proton9-rich-content {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
 .proton9-entry-text {
 	white-space: pre-wrap;
 	word-break: break-word;
 	line-height: 1.4;
+	user-select: text;
+	-webkit-user-select: text;
 }
 
-.proton9-session-list {
-	list-style: none;
+.proton9-code-block {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 80%, transparent);
+}
+
+.proton9-code-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--vscode-panel-border, transparent);
+}
+
+.proton9-code-copy {
+	padding: 4px 8px;
+	font-size: 11px;
+}
+
+.proton9-code-pre {
+	margin: 0;
+	padding: 12px;
+	overflow-x: auto;
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 12px;
+	line-height: 1.5;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.proton9-code-content {
+	white-space: pre;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.proton9-utility-controls {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.proton9-utility-toggle {
+	border-radius: 999px;
+}
+
+.proton9-utility-stack {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.proton9-status-grid {
 	display: flex;
 	flex-direction: column;
 	gap: 8px;
-	padding: 0;
-	margin: 0;
 }
 
-.proton9-session-item {
-	padding: 8px 10px;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
+.proton9-status-row {
+	gap: 12px;
+}
+
+.proton9-status-key {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	min-width: 78px;
+}
+
+.proton9-status-value {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.proton9-state-chip {
+	border-radius: 999px;
+}
+
+.proton9-state-running {
+	background: color-mix(in srgb, var(--vscode-testing-iconPassed) 24%, var(--vscode-badge-background));
+}
+
+.proton9-state-error {
+	background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 40%, var(--vscode-badge-background));
+}
+
+.proton9-state-stopped {
+	background: color-mix(in srgb, var(--vscode-editorWarning-background) 30%, var(--vscode-badge-background));
 }
 
 .proton9-empty {
@@ -260,3 +396,75 @@
 	border-radius: 8px;
 	padding: 8px 10px;
 }
+
+/* Code block language label */
+.proton9-code-lang {
+	font-family: var(--vscode-editor-font-family, monospace);
+	font-size: 11px;
+	letter-spacing: 0.03em;
+}
+
+/* Syntax highlighting */
+.proton9-hl-keyword {
+	color: var(--vscode-symbolIcon-keywordForeground, #c586c0);
+	font-weight: 600;
+}
+
+.proton9-hl-string {
+	color: var(--vscode-symbolIcon-stringForeground, #ce9178);
+}
+
+.proton9-hl-comment {
+	color: var(--vscode-symbolIcon-enumeratorForeground, #6a9955);
+	font-style: italic;
+	opacity: 0.85;
+}
+
+.proton9-hl-number {
+	color: var(--vscode-symbolIcon-constantForeground, #b5cea8);
+}
+
+/* Markdown rendering */
+.proton9-md-heading {
+	font-weight: 700;
+	padding: 4px 0 2px;
+}
+
+.proton9-md-h1 {
+	font-size: 1.2em;
+}
+
+.proton9-md-h2 {
+	font-size: 1.1em;
+}
+
+.proton9-md-h3,
+.proton9-md-h4 {
+	font-size: 1em;
+}
+
+.proton9-md-list {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding: 2px 0;
+}
+
+.proton9-md-list-item {
+	display: flex;
+	gap: 6px;
+	align-items: baseline;
+	line-height: 1.4;
+}
+
+.proton9-md-bullet {
+	color: var(--vscode-descriptionForeground);
+	flex-shrink: 0;
+	font-size: 0.85em;
+}
+
+.proton9-md-bold {
+	font-weight: 700;
+	color: var(--vscode-foreground);
+}
+
