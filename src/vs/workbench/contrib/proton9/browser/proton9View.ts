@@ -3,11 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import './media/proton9.css';
 import * as dom from '../../../../base/browser/dom.js';
 import { DisposableStore } from '../../../../base/common/lifecycle.js';
 import * as nls from '../../../../nls.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { IOpenerService } from '../../../../platform/opener/common/opener.js';
@@ -16,13 +18,20 @@ import { IContextKeyService } from '../../../../platform/contextkey/common/conte
 import { IViewDescriptorService } from '../../../common/views.js';
 import { IViewPaneOptions, ViewPane } from '../../../browser/parts/views/viewPane.js';
 import { IP9SessionService } from '../common/proton9Service.js';
+import { IP9ActionEntry, IP9TranscriptEntry } from '../common/proton9Types.js';
 import { P9BackendClient } from './proton9BackendClient.js';
 
 export class Proton9SessionView extends ViewPane {
 	private readonly disposables = this._register(new DisposableStore());
 	private readonly backendClient = this._register(new P9BackendClient());
 	private bodyElement: HTMLElement | undefined;
-	private readonly sessionLogs = new Map<string, string[]>();
+	private readonly sessionTranscripts = new Map<string, IP9TranscriptEntry[]>();
+	private readonly sessionActions = new Map<string, IP9ActionEntry[]>();
+	private readonly activeAssistantEntryIds = new Map<string, string>();
+	private renderedActiveTabId: string | undefined;
+	private activeTranscriptListElement: HTMLElement | undefined;
+	private activeActionListElement: HTMLElement | undefined;
+	private readonly activeTranscriptTextElements = new Map<string, HTMLElement>();
 	private isConnected = false;
 
 	constructor(
@@ -35,9 +44,10 @@ export class Proton9SessionView extends ViewPane {
 		@IKeybindingService keybindingService: IKeybindingService,
 		@IOpenerService openerService: IOpenerService,
 		@IThemeService themeService: IThemeService,
+		@IHoverService hoverService: IHoverService,
 		@IP9SessionService private readonly p9SessionService: IP9SessionService,
 	) {
-		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService);
+		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 		this._register(this.p9SessionService.onDidChangeSessions(() => this.renderSessions()));
 		this._register(this.backendClient.onDidChangeConnection(connected => {
 			this.isConnected = connected;
@@ -81,6 +91,7 @@ export class Proton9SessionView extends ViewPane {
 		}
 
 		if (activeSession) {
+			this.renderedActiveTabId = activeSession.tabId;
 			const activeCard = dom.append(this.bodyElement, dom.$('.proton9-session-active'));
 			dom.append(activeCard, dom.$('div.proton9-session-active-title', undefined, `${activeSession.title} (${activeSession.slotId})`));
 			dom.append(activeCard, dom.$('div.proton9-session-active-meta', undefined, `status: ${activeSession.status}`));
@@ -102,13 +113,14 @@ export class Proton9SessionView extends ViewPane {
 					return;
 				}
 
-				this.appendLog(activeSession.tabId, `> ${task}`);
+				this.appendTranscriptEntry(activeSession.tabId, 'user', task);
+				input.value = '';
 				this.p9SessionService.updateSessionStatus(activeSession.tabId, 'running');
 				try {
 					await this.backendClient.runTask(activeSession, task);
 				} catch (error) {
 					this.p9SessionService.updateSessionStatus(activeSession.tabId, 'error');
-					this.appendLog(activeSession.tabId, `[error] ${error instanceof Error ? error.message : String(error)}`);
+					this.appendTranscriptEntry(activeSession.tabId, 'error', error instanceof Error ? error.message : String(error));
 				}
 			}));
 
@@ -116,12 +128,31 @@ export class Proton9SessionView extends ViewPane {
 				try {
 					await this.backendClient.stopTask(activeSession);
 				} catch (error) {
-					this.appendLog(activeSession.tabId, `[error] ${error instanceof Error ? error.message : String(error)}`);
+					this.appendTranscriptEntry(activeSession.tabId, 'error', error instanceof Error ? error.message : String(error));
 				}
 			}));
 
-			const output = dom.append(activeCard, dom.$('pre.proton9-session-output'));
-			output.textContent = this.getLogText(activeSession.tabId);
+			const transcriptSection = dom.append(activeCard, dom.$('.proton9-session-transcript'));
+			dom.append(transcriptSection, dom.$('h4', undefined, nls.localize('proton9.sessions.transcript', "Transcript")));
+			const transcriptList = dom.append(transcriptSection, dom.$('.proton9-session-transcript-list'));
+			this.activeTranscriptListElement = transcriptList;
+			this.activeTranscriptTextElements.clear();
+			for (const entry of this.getTranscriptEntries(activeSession.tabId)) {
+				this.renderTranscriptEntryDom(transcriptList, entry);
+			}
+
+			const actionSection = dom.append(activeCard, dom.$('.proton9-session-actions-feed'));
+			dom.append(actionSection, dom.$('h4', undefined, nls.localize('proton9.sessions.actions', "Action Feed")));
+			const actionList = dom.append(actionSection, dom.$('.proton9-session-actions-list'));
+			this.activeActionListElement = actionList;
+			for (const entry of this.getActionEntries(activeSession.tabId)) {
+				this.renderActionEntryDom(actionList, entry);
+			}
+		} else {
+			this.renderedActiveTabId = undefined;
+			this.activeTranscriptListElement = undefined;
+			this.activeActionListElement = undefined;
+			this.activeTranscriptTextElements.clear();
 		}
 
 		const list = dom.append(this.bodyElement, dom.$('ul.proton9-session-list'));
@@ -136,7 +167,7 @@ export class Proton9SessionView extends ViewPane {
 					try {
 						await this.backendClient.switchSession(session);
 					} catch (error) {
-						this.appendLog(session.tabId, `[error] ${error instanceof Error ? error.message : String(error)}`);
+						this.appendTranscriptEntry(session.tabId, 'error', error instanceof Error ? error.message : String(error));
 					}
 				}
 			}));
@@ -158,7 +189,7 @@ export class Proton9SessionView extends ViewPane {
 		} catch (error) {
 			const activeSession = this.p9SessionService.getActiveSession();
 			if (activeSession) {
-				this.appendLog(activeSession.tabId, `[error] ${error instanceof Error ? error.message : String(error)}`);
+				this.appendTranscriptEntry(activeSession.tabId, 'error', error instanceof Error ? error.message : String(error));
 			}
 		}
 	}
@@ -172,44 +203,201 @@ export class Proton9SessionView extends ViewPane {
 
 		switch (type) {
 			case 'connected':
-				this.appendLog(session.tabId, '[system] connected to Proton9 backend');
+				this.appendTranscriptEntry(session.tabId, 'info', 'Connected to Proton9 backend.');
 				break;
 			case 'task_started':
 				this.p9SessionService.updateSessionStatus(session.tabId, 'running');
-				this.appendLog(session.tabId, `[task] ${String(data?.task ?? 'task started')}`);
+				this.ensureAssistantEntry(session.tabId);
 				break;
 			case 'llm_token':
-				this.appendLog(session.tabId, String(data?.text ?? ''));
+				this.appendAssistantChunk(session.tabId, String(data?.text ?? ''));
+				break;
+			case 'action':
+				this.appendActionEntry(session.tabId, 'action', `Tool: ${String(data?.tool ?? '?')}`, this.formatActionDetail(data));
+				break;
+			case 'result':
+				this.appendActionEntry(session.tabId, 'result', data?.success ? 'Result: success' : 'Result: failure', String(data?.output ?? data?.error ?? ''));
 				break;
 			case 'info':
-				this.appendLog(session.tabId, `[info] ${String(data?.message ?? '')}`);
+			case 'task_info':
+				this.appendTranscriptEntry(session.tabId, 'info', String(data?.message ?? ''));
 				break;
 			case 'task_complete':
 				this.p9SessionService.updateSessionStatus(session.tabId, 'idle');
-				this.appendLog(session.tabId, `[done] ${String(data?.result?.summary ?? 'task complete')}`);
+				this.finishAssistantEntry(session.tabId);
+				this.appendTranscriptEntry(session.tabId, 'summary', String(data?.result?.summary ?? 'Task complete.'));
 				break;
 			case 'slot_complete':
 				this.p9SessionService.updateSessionStatus(session.tabId, 'idle');
-				this.appendLog(session.tabId, '[slot] complete');
+				this.finishAssistantEntry(session.tabId);
+				this.appendTranscriptEntry(session.tabId, 'info', 'Slot complete.');
 				break;
 			case 'error':
 			case 'task_error':
 				this.p9SessionService.updateSessionStatus(session.tabId, 'error');
-				this.appendLog(session.tabId, `[error] ${String(data?.message ?? data?.error ?? 'unknown error')}`);
+				this.finishAssistantEntry(session.tabId);
+				this.appendTranscriptEntry(session.tabId, 'error', String(data?.message ?? data?.error ?? 'unknown error'));
 				break;
 		}
 	}
 
-	private appendLog(tabId: string, line: string): void {
-		const entries = this.sessionLogs.get(tabId) ?? [];
-		if (line) {
-			entries.push(line);
+	private appendTranscriptEntry(tabId: string, kind: IP9TranscriptEntry['kind'], text: string): void {
+		if (!text) {
+			return;
 		}
-		this.sessionLogs.set(tabId, entries.slice(-200));
+
+		const entries = this.sessionTranscripts.get(tabId) ?? [];
+		entries.push({
+			id: this.createEntryId(kind),
+			kind,
+			text,
+			timestamp: Date.now(),
+		});
+		const trimmedEntries = entries.slice(-200);
+		this.sessionTranscripts.set(tabId, trimmedEntries);
+		const newEntry = trimmedEntries[trimmedEntries.length - 1];
+		if (!this.patchTranscriptEntry(tabId, newEntry)) {
+			this.renderSessions();
+		}
+	}
+
+	private ensureAssistantEntry(tabId: string): void {
+		if (this.activeAssistantEntryIds.has(tabId)) {
+			return;
+		}
+
+		const entries = this.sessionTranscripts.get(tabId) ?? [];
+		const entry: IP9TranscriptEntry = {
+			id: this.createEntryId('assistant'),
+			kind: 'assistant',
+			text: '',
+			timestamp: Date.now(),
+		};
+		entries.push(entry);
+		const trimmedEntries = entries.slice(-200);
+		this.sessionTranscripts.set(tabId, trimmedEntries);
+		this.activeAssistantEntryIds.set(tabId, entry.id);
+		if (!this.patchTranscriptEntry(tabId, entry)) {
+			this.renderSessions();
+		}
+	}
+
+	private appendAssistantChunk(tabId: string, chunk: string): void {
+		if (!chunk) {
+			return;
+		}
+
+		this.ensureAssistantEntry(tabId);
+		const activeId = this.activeAssistantEntryIds.get(tabId);
+		const entries = this.sessionTranscripts.get(tabId) ?? [];
+		const target = entries.find(entry => entry.id === activeId);
+		if (!target) {
+			return;
+		}
+
+		target.text += chunk;
+		if (tabId === this.renderedActiveTabId) {
+			const textElement = this.activeTranscriptTextElements.get(target.id);
+			if (textElement) {
+				textElement.textContent = target.text;
+				return;
+			}
+		}
 		this.renderSessions();
 	}
 
-	private getLogText(tabId: string): string {
-		return (this.sessionLogs.get(tabId) ?? []).join('\n');
+	private finishAssistantEntry(tabId: string): void {
+		this.activeAssistantEntryIds.delete(tabId);
+	}
+
+	private appendActionEntry(tabId: string, kind: IP9ActionEntry['kind'], label: string, detail: string): void {
+		const entries = this.sessionActions.get(tabId) ?? [];
+		entries.push({
+			id: this.createEntryId(kind),
+			kind,
+			label,
+			detail,
+			timestamp: Date.now(),
+		});
+		const trimmedEntries = entries.slice(-200);
+		this.sessionActions.set(tabId, trimmedEntries);
+		const newEntry = trimmedEntries[trimmedEntries.length - 1];
+		if (!this.patchActionEntry(tabId, newEntry)) {
+			this.renderSessions();
+		}
+	}
+
+	private getTranscriptEntries(tabId: string): readonly IP9TranscriptEntry[] {
+		return this.sessionTranscripts.get(tabId) ?? [];
+	}
+
+	private getActionEntries(tabId: string): readonly IP9ActionEntry[] {
+		return this.sessionActions.get(tabId) ?? [];
+	}
+
+	private formatActionDetail(data: any): string {
+		const parts: string[] = [];
+		if (typeof data?.step === 'number') {
+			parts.push(`step ${data.step}`);
+		}
+		if (data?.args && typeof data.args === 'object') {
+			parts.push(JSON.stringify(data.args));
+		}
+		return parts.join(' | ');
+	}
+
+	private createEntryId(prefix: string): string {
+		return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	}
+
+	private patchTranscriptEntry(tabId: string, entry: IP9TranscriptEntry): boolean {
+		if (tabId !== this.renderedActiveTabId || !this.activeTranscriptListElement) {
+			return false;
+		}
+
+		this.renderTranscriptEntryDom(this.activeTranscriptListElement, entry);
+		return true;
+	}
+
+	private patchActionEntry(tabId: string, entry: IP9ActionEntry): boolean {
+		if (tabId !== this.renderedActiveTabId || !this.activeActionListElement) {
+			return false;
+		}
+
+		this.renderActionEntryDom(this.activeActionListElement, entry);
+		return true;
+	}
+
+	private renderTranscriptEntryDom(container: HTMLElement, entry: IP9TranscriptEntry): void {
+		const item = dom.append(container, dom.$(`div.proton9-transcript-entry proton9-transcript-${entry.kind}`));
+		const header = dom.append(item, dom.$('div.proton9-transcript-header'));
+		dom.append(header, dom.$('div.proton9-transcript-kind', undefined, this.formatTranscriptKind(entry.kind)));
+		const textElement = dom.append(item, dom.$('div.proton9-transcript-text', undefined, entry.text));
+		if (entry.kind === 'assistant' && this.renderedActiveTabId) {
+			this.activeTranscriptTextElements.set(entry.id, textElement);
+		}
+	}
+
+	private renderActionEntryDom(container: HTMLElement, entry: IP9ActionEntry): void {
+		const item = dom.append(container, dom.$(`div.proton9-action-entry proton9-action-${entry.kind}`));
+		const header = dom.append(item, dom.$('div.proton9-action-header'));
+		dom.append(header, dom.$('div.proton9-action-kind', undefined, entry.kind === 'action' ? 'Action' : 'Result'));
+		dom.append(header, dom.$('div.proton9-action-label', undefined, entry.label));
+		dom.append(item, dom.$('div.proton9-action-detail', undefined, entry.detail));
+	}
+
+	private formatTranscriptKind(kind: IP9TranscriptEntry['kind']): string {
+		switch (kind) {
+			case 'user':
+				return 'You';
+			case 'assistant':
+				return 'Proton9';
+			case 'info':
+				return 'Info';
+			case 'summary':
+				return 'Summary';
+			case 'error':
+				return 'Error';
+		}
 	}
 }

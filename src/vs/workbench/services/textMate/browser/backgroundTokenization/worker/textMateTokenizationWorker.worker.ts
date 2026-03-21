@@ -110,7 +110,12 @@ export class TextMateTokenizationWorker implements IWebWorkerServerRequestHandle
 				return that._grammarCache[encodedLanguageId];
 			},
 			setTokensAndStates(versionId: number, tokens: Uint8Array, stateDeltas: StateDeltas[]): void {
-				that._host.$setTokensAndStates(data.controllerId, versionId, tokens, stateDeltas);
+				that._host.$setTokensAndStates(
+					data.controllerId,
+					versionId,
+					tokens.buffer.slice(tokens.byteOffset, tokens.byteOffset + tokens.byteLength) as ArrayBuffer,
+					stateDeltas
+				);
 			},
 			reportTokenizationTime(timeMs: number, languageId: string, sourceExtensionId: string | undefined, lineLength: number, isRandomSample: boolean): void {
 				that._host.$reportTokenizationTime(timeMs, languageId, sourceExtensionId, lineLength, isRandomSample);

@@ -10,28 +10,10 @@
         "Other"
     ],
     "activationEvents": [
-        "*"
+        "onStartupFinished"
     ],
     "main": "./out/extension",
     "contributes": {
-        "viewsContainers": {
-            "activitybar": [
-                {
-                    "id": "Proton9",
-                    "title": "Proton9",
-                    "icon": "media/icon.svg"
-                }
-            ]
-        },
-        "views": {
-            "Proton9": [
-                {
-                    "type": "webview",
-                    "id": "Proton9.chat",
-                    "name": "Proton9"
-                }
-            ]
-        },
         "commands": [
             {
                 "command": "Proton9.sendTask",
@@ -48,22 +30,8 @@
             {
                 "command": "Proton9.openChat",
                 "title": "Proton9: Open Chat"
-            },
-            {
-                "command": "Proton9.newSlot",
-                "title": "New Agent Slot",
-                "icon": "media/icon-add.svg"
             }
         ],
-        "menus": {
-            "view/title": [
-                {
-                    "command": "Proton9.newSlot",
-                    "when": "view == Proton9.chat",
-                    "group": "navigation"
-                }
-            ]
-        },
         "configuration": {
             "title": "Proton9",
             "properties": {

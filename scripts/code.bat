@@ -5,6 +5,11 @@ title VSCode Dev
 
 pushd %~dp0\..
 
+:: Canonical local development launch path for PrimeForgeIDE.
+:: This script is the correct entrypoint because it runs the prelaunch bootstrap
+:: before starting the packaged Electron binary.
+:: Set VSCODE_SKIP_PRELAUNCH=1 only for debugging an already-built tree.
+
 :: Get electron, compile, built-in extensions
 if "%VSCODE_SKIP_PRELAUNCH%"=="" node build/lib/preLaunch.js
 

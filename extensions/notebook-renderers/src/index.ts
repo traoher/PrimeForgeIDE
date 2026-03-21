@@ -15,8 +15,17 @@ function clearContainer(container: HTMLElement) {
 	}
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const { buffer, byteOffset, byteLength } = bytes;
+	if (byteOffset === 0 && byteLength === buffer.byteLength) {
+		return buffer as ArrayBuffer;
+	}
+
+	return buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer;
+}
+
 function renderImage(outputInfo: OutputItem, element: HTMLElement): IDisposable {
-	const blob = new Blob([outputInfo.data()], { type: outputInfo.mime });
+	const blob = new Blob([toArrayBuffer(outputInfo.data())], { type: outputInfo.mime });
 	const src = URL.createObjectURL(blob);
 	const disposable = {
 		dispose: () => {

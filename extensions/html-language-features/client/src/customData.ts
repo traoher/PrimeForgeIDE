@@ -7,6 +7,15 @@ import { workspace, extensions, Uri, EventEmitter, Disposable } from 'vscode';
 import { Runtime } from './htmlClient';
 import { Utils } from 'vscode-uri';
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const { buffer, byteOffset, byteLength } = bytes;
+	if (byteOffset === 0 && byteLength === buffer.byteLength) {
+		return buffer as ArrayBuffer;
+	}
+
+	return buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer;
+}
+
 
 export function getCustomDataSource(runtime: Runtime, toDispose: Disposable[]) {
 	let localExtensionUris = new Set<string>();
@@ -54,7 +63,7 @@ export function getCustomDataSource(runtime: Runtime, toDispose: Disposable[]) {
 			const uri = Uri.parse(uriString);
 			if (localExtensionUris.has(uriString)) {
 				return workspace.fs.readFile(uri).then(buffer => {
-					return new runtime.TextDecoder().decode(buffer);
+					return new runtime.TextDecoder().decode(toArrayBuffer(buffer));
 				});
 			}
 			return workspace.openTextDocument(uri).then(doc => {

@@ -5,7 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IP9NativeSession, IP9RunTaskPayload, IP9StopTaskPayload, IP9SwitchSessionPayload } from '../common/proton9Types.js';
+import { IP9ClearSessionPayload, IP9DeleteSessionPayload, IP9NativeSession, IP9RunTaskPayload, IP9StopTaskPayload, IP9SwitchSessionPayload } from '../common/proton9Types.js';
 
 export interface IP9BackendEvent {
 	type: string;
@@ -108,6 +108,16 @@ export class P9BackendClient extends Disposable {
 		this.send(this.createSwitchSessionPayload(session));
 	}
 
+	async clearSession(session: IP9NativeSession): Promise<void> {
+		await this.ensureConnected();
+		this.send(this.createClearSessionPayload(session));
+	}
+
+	async deleteSession(session: IP9NativeSession): Promise<void> {
+		await this.ensureConnected();
+		this.send(this.createDeleteSessionPayload(session));
+	}
+
 	private send(payload: object): void {
 		if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
 			throw new Error('Proton9 backend is not connected.');
@@ -138,6 +148,21 @@ export class P9BackendClient extends Disposable {
 	private createSwitchSessionPayload(session: IP9NativeSession): IP9SwitchSessionPayload {
 		return {
 			type: 'switch_session',
+			client_id: session.clientId,
+			session_id: session.sessionId,
+		};
+	}
+
+	private createClearSessionPayload(session: IP9NativeSession): IP9ClearSessionPayload {
+		return {
+			type: 'clear_context',
+			client_id: session.clientId,
+		};
+	}
+
+	private createDeleteSessionPayload(session: IP9NativeSession): IP9DeleteSessionPayload {
+		return {
+			type: 'delete_chat',
 			client_id: session.clientId,
 			session_id: session.sessionId,
 		};

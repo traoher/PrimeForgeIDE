@@ -7,6 +7,15 @@ import { Uri, workspace } from 'vscode';
 import { RequestType, BaseLanguageClient } from 'vscode-languageclient';
 import { Runtime } from './cssClient';
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const { buffer, byteOffset, byteLength } = bytes;
+	if (byteOffset === 0 && byteLength === buffer.byteLength) {
+		return buffer as ArrayBuffer;
+	}
+
+	return buffer.slice(byteOffset, byteOffset + byteLength) as ArrayBuffer;
+}
+
 export namespace FsContentRequest {
 	export const type: RequestType<{ uri: string; encoding?: string }, string, any> = new RequestType('fs/content');
 }
@@ -25,7 +34,7 @@ export function serveFileSystemRequests(client: BaseLanguageClient, runtime: Run
 			return runtime.fs.getContent(param.uri);
 		}
 		return workspace.fs.readFile(uri).then(buffer => {
-			return new runtime.TextDecoder(param.encoding).decode(buffer);
+			return new runtime.TextDecoder(param.encoding).decode(toArrayBuffer(buffer));
 		});
 	});
 	client.onRequest(FsReadDirRequest.type, (uriString: string) => {

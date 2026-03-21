@@ -7,7 +7,7 @@ import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { IP9SessionService } from '../common/proton9Service.js';
-import { IP9NativeSession, P9SessionStatus } from '../common/proton9Types.js';
+import { IP9NativeSession, P9_MAX_SESSIONS, P9SessionStatus } from '../common/proton9Types.js';
 import { P9SessionStore } from './proton9SessionStore.js';
 
 function createId(prefix: string): string {
@@ -36,8 +36,16 @@ export class P9SessionService extends Disposable implements IP9SessionService {
 		return this.store.getActiveSession();
 	}
 
+	canCreateSession(): boolean {
+		return this.store.getSessions().length < P9_MAX_SESSIONS;
+	}
+
 	createSession(): IP9NativeSession {
 		const sessionCount = this.getNextSessionOrdinal();
+		if (!sessionCount) {
+			throw new Error(`Proton9 is limited to ${P9_MAX_SESSIONS} sessions.`);
+		}
+
 		const session: IP9NativeSession = {
 			tabId: createId('p9tab'),
 			slotId: `p9-${sessionCount}`,
@@ -68,6 +76,19 @@ export class P9SessionService extends Disposable implements IP9SessionService {
 		this._onDidChangeSessions.fire();
 	}
 
+	renameSession(tabId: string, title: string): void {
+		const trimmedTitle = title.trim();
+		if (!trimmedTitle) {
+			return;
+		}
+
+		this.store.updateSession(tabId, {
+			title: trimmedTitle,
+			lastActiveAt: Date.now(),
+		});
+		this._onDidChangeSessions.fire();
+	}
+
 	updateSessionStatus(tabId: string, status: P9SessionStatus): void {
 		this.store.updateSession(tabId, {
 			status,
@@ -81,11 +102,17 @@ export class P9SessionService extends Disposable implements IP9SessionService {
 		this._onDidChangeSessions.fire();
 	}
 
-	private getNextSessionOrdinal(): number {
-		const ordinals = this.store.getSessions()
+	private getNextSessionOrdinal(): number | undefined {
+		const ordinals = new Set(this.store.getSessions()
 			.map(session => Number.parseInt(session.slotId.replace(/^p9-/, ''), 10))
-			.filter(value => Number.isFinite(value) && value > 0);
+			.filter(value => Number.isFinite(value) && value > 0));
 
-		return ordinals.length ? Math.max(...ordinals) + 1 : 1;
+		for (let ordinal = 1; ordinal <= P9_MAX_SESSIONS; ordinal++) {
+			if (!ordinals.has(ordinal)) {
+				return ordinal;
+			}
+		}
+
+		return undefined;
 	}
 }

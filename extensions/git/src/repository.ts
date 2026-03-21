@@ -14,7 +14,7 @@ import { Branch, BranchQuery, Change, CommitOptions, FetchOptions, ForcePushMode
 import { AutoFetcher } from './autofetch';
 import { GitBranchProtectionProvider, IBranchProtectionProviderRegistry } from './branchProtection';
 import { debounce, memoize, throttle } from './decorators';
-import { Repository as BaseRepository, BlameInformation, Commit, GitError, LogFileOptions, LsTreeElement, PullOptions, RefQuery, Stash, Submodule } from './git';
+import { Repository as BaseRepository, BlameInformation, Commit, LogFileOptions, LsTreeElement, PullOptions, RefQuery, Stash, Submodule } from './git';
 import { GitHistoryProvider } from './historyProvider';
 import { Operation, OperationKind, OperationManager, OperationResult } from './operation';
 import { CommitCommandsCenter, IPostCommitCommandsProviderRegistry } from './postCommitCommands';
@@ -1974,12 +1974,12 @@ export class Repository implements Disposable {
 		return await this.run(Operation.Show, async () => {
 			try {
 				const content = await this.repository.buffer(ref, filePath);
-				return await workspace.decode(content, Uri.file(filePath));
+				return await workspace.decode(new Uint8Array(content), Uri.file(filePath));
 			} catch (err) {
 				if (err.gitErrorCode === GitErrorCodes.WrongCase) {
 					const gitFilePath = await this.repository.getGitFilePath(ref, filePath);
 					const content = await this.repository.buffer(ref, gitFilePath);
-					return await workspace.decode(content, Uri.file(filePath));
+					return await workspace.decode(new Uint8Array(content), Uri.file(filePath));
 				}
 
 				throw err;
@@ -2094,11 +2094,11 @@ export class Repository implements Disposable {
 					} else if (exitCode === 0) {
 						resolve(new Set<string>(this.parseIgnoreCheck(data)));
 					} else {
-						if (/ is in submodule /.test(stderr)) {
-							reject(new GitError({ stdout: data, stderr, exitCode, gitErrorCode: GitErrorCodes.IsInSubmodule }));
-						} else {
-							reject(new GitError({ stdout: data, stderr, exitCode }));
-						}
+						// `git check-ignore` is advisory. If Git can't answer for a restored path
+						// (for example submodules or transient startup state), do not surface a
+						// workbench error. Treat the paths as not ignored and continue.
+						this.logger.warn(`[Repository][checkIgnore] git check-ignore failed with exit code ${exitCode}. stderr: ${stderr || '<empty>'}`);
+						resolve(new Set<string>());
 					}
 				};
 

@@ -15,8 +15,10 @@ export interface IP9SessionService {
 
 	getSessions(): readonly IP9NativeSession[];
 	getActiveSession(): IP9NativeSession | undefined;
+	canCreateSession(): boolean;
 	createSession(): IP9NativeSession;
 	setActiveSession(tabId: string): void;
+	renameSession(tabId: string, title: string): void;
 	updateSession(tabId: string, update: Partial<IP9NativeSession>): void;
 	updateSessionStatus(tabId: string, status: P9SessionStatus): void;
 	removeSession(tabId: string): void;

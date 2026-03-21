@@ -79,7 +79,7 @@ export class ContiguousTokensStore {
 
 		if (tokens.byteOffset === 0 && tokens.byteLength === tokens.buffer.byteLength) {
 			// Store directly the ArrayBuffer pointer to save an object
-			return tokens.buffer;
+			return tokens.buffer as ArrayBuffer;
 		}
 		return tokens;
 	}

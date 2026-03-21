@@ -232,7 +232,7 @@ export function readBytes(stream: Readable, bytes: number): Promise<Buffer> {
 
 		stream.on('data', (data: Buffer) => {
 			const bytesToRead = Math.min(bytes - bytesRead, data.length);
-			data.copy(buffer, bytesRead, 0, bytesToRead);
+			buffer.set(new Uint8Array(data.buffer, data.byteOffset, bytesToRead), bytesRead);
 			bytesRead += bytesToRead;
 
 			if (bytesRead === bytes) {

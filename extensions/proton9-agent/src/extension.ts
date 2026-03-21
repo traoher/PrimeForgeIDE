@@ -2,14 +2,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawn, ChildProcess } from 'child_process';
 import { ForgeWebSocket } from './websocket';
-import { SidebarProvider } from './sidebar';
 import { StatusBarController } from './statusBar';
-import { ChatPanel } from './chatPanel';
 import { InlineCompletionProvider } from './inlineCompletion';
 
 let forge: ForgeWebSocket;
 let statusBar: StatusBarController;
-let sidebarProvider: SidebarProvider;
 let serverProcess: ChildProcess | null = null;
 let serverOutputChannel: vscode.OutputChannel;
 
@@ -146,24 +143,6 @@ export function activate(context: vscode.ExtensionContext): void {
             })
         );
 
-        sidebarProvider = new SidebarProvider(context.extensionUri, forge);
-
-        // Track active text editor so sidebar can reference it even when webview has focus
-        SidebarProvider.lastActiveEditor = vscode.window.activeTextEditor;
-        context.subscriptions.push(
-            vscode.window.onDidChangeActiveTextEditor((editor) => {
-                if (editor) {
-                    SidebarProvider.lastActiveEditor = editor;
-                }
-            })
-        );
-
-        context.subscriptions.push(
-            vscode.window.registerWebviewViewProvider(SidebarProvider.viewType, sidebarProvider, {
-                webviewOptions: { retainContextWhenHidden: true },
-            })
-        );
-
         statusBar = new StatusBarController(forge);
         context.subscriptions.push(statusBar);
 
@@ -205,124 +184,12 @@ export function activate(context: vscode.ExtensionContext): void {
             }),
 
             vscode.commands.registerCommand('Proton9.openChat', () => {
-                // Open P9's web UI in VS Code's Simple Browser (guaranteed to work)
-                const guiUrl = 'http://localhost:9322';
-                vscode.commands.executeCommand('simpleBrowser.show', guiUrl);
+                void vscode.commands.executeCommand('workbench.view.proton9');
             }),
 
             vscode.commands.registerCommand('Proton9.stopTask', () => {
                 forge.stopTask();
             }),
-
-            vscode.commands.registerCommand('Proton9.newSlot', () => {
-                const slotNum = (context.globalState.get<number>('proton9.slotCounter') || 1) + 1;
-                context.globalState.update('proton9.slotCounter', slotNum);
-                const slotId = 'p9-' + slotNum;
-
-                const panel = vscode.window.createWebviewPanel(
-                    'proton9.slot',
-                    '🤖 ' + slotId.toUpperCase(),
-                    vscode.ViewColumn.Beside,
-                    { enableScripts: true, retainContextWhenHidden: true }
-                );
-
-                panel.webview.html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<style>
-    * { margin:0; padding:0; box-sizing:border-box; }
-    body { font-family:var(--vscode-font-family); color:var(--vscode-foreground); background:var(--vscode-editor-background); height:100vh; display:flex; flex-direction:column; padding:16px; }
-    h2 { font-size:16px; color:#4ec9b0; margin-bottom:12px; }
-    .badge { display:inline-block; padding:2px 8px; border-radius:3px; background:rgba(78,201,176,0.15); color:#4ec9b0; font-size:11px; font-weight:600; margin-bottom:12px; }
-    label { font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.3px; display:block; margin-bottom:4px; margin-top:12px; }
-    select, input[type=text], textarea { width:100%; padding:6px 10px; border:1px solid var(--vscode-input-border, #444); background:var(--vscode-input-background); color:var(--vscode-input-foreground); font-family:var(--vscode-font-family); font-size:12px; border-radius:4px; outline:none; }
-    select:focus, input:focus, textarea:focus { border-color:var(--vscode-focusBorder); }
-    textarea { min-height:80px; resize:vertical; margin-top:4px; }
-    .launch-btn { width:100%; padding:8px; margin-top:16px; background:var(--vscode-button-background); color:var(--vscode-button-foreground); border:none; border-radius:4px; font-size:13px; font-weight:600; cursor:pointer; }
-    .launch-btn:hover { background:var(--vscode-button-hoverBackground); }
-    #status { margin-top:12px; font-size:12px; color:var(--vscode-descriptionForeground); }
-    #messages { flex:1; overflow-y:auto; margin-top:12px; border-top:1px solid var(--vscode-widget-border, #333); padding-top:8px; }
-    .msg { padding:6px 10px; margin:4px 0; border-radius:4px; font-size:12px; }
-    .msg.system { background:var(--vscode-editor-background); border:1px solid var(--vscode-widget-border, #444); }
-    .msg.user { background:var(--vscode-button-background); color:var(--vscode-button-foreground); }
-</style>
-</head>
-<body>
-    <h2>🤖 ${slotId.toUpperCase()}</h2>
-    <span class="badge">Agent Slot — Detached</span>
-    <label>Provider</label>
-    <select id="provider">
-        <option value="deepseek">DeepSeek</option>
-        <option value="gemini">Gemini</option>
-        <option value="anthropic">Anthropic</option>
-        <option value="openai">OpenAI</option>
-    </select>
-    <label>Task</label>
-    <textarea id="task" placeholder="Describe the task for this agent..."></textarea>
-    <button class="launch-btn" id="launch">▶ Launch Agent</button>
-    <div id="status"></div>
-    <div id="messages"></div>
-    <script>
-        const vscode = acquireVsCodeApi();
-        const launchBtn = document.getElementById('launch');
-        const statusEl = document.getElementById('status');
-        const messagesEl = document.getElementById('messages');
-        launchBtn.addEventListener('click', () => {
-            const task = document.getElementById('task').value;
-            const provider = document.getElementById('provider').value;
-            if (!task.trim()) return;
-            vscode.postMessage({ type: 'launch_slot', task, provider, slot_id: '${slotId}' });
-            statusEl.textContent = '⏳ Launching...';
-            launchBtn.disabled = true;
-            launchBtn.textContent = '⏳ Running...';
-        });
-        window.addEventListener('message', (event) => {
-            const msg = event.data;
-            if (msg.type === 'slot_update') {
-                statusEl.textContent = msg.status || '';
-            } else if (msg.type === 'slot_message') {
-                const div = document.createElement('div');
-                div.className = 'msg ' + (msg.role || 'system');
-                div.textContent = msg.text || '';
-                messagesEl.appendChild(div);
-                messagesEl.scrollTop = messagesEl.scrollHeight;
-            }
-        });
-    </script>
-</body>
-</html>`;
-
-                // Handle messages from the slot panel
-                panel.webview.onDidReceiveMessage((msg: any) => {
-                    if (msg.type === 'launch_slot') {
-                        const workDir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
-                        forge.send({
-                            type: 'run_task',
-                            task: msg.task,
-                            working_dir: workDir,
-                            provider: msg.provider,
-                            slot_id: msg.slot_id,
-                        });
-                        panel.webview.postMessage({ type: 'slot_update', status: '🚀 Agent launched on ' + msg.provider });
-                        vscode.window.showInformationMessage('P9: Agent slot ' + msg.slot_id + ' launched on ' + msg.provider);
-                    }
-                });
-
-                // Forward relevant events to the slot panel
-                const eventSub = forge.onEvent((msg: any) => {
-                    if (msg.slot_id === slotId) {
-                        if (msg.type === 'slot_complete') {
-                            panel.webview.postMessage({ type: 'slot_update', status: '✅ Complete' });
-                            panel.webview.postMessage({ type: 'slot_message', role: 'system', text: '✅ Task complete' });
-                        } else if (msg.type === 'action') {
-                            panel.webview.postMessage({ type: 'slot_message', role: 'system', text: '[Step ' + msg.step + '] ' + msg.tool });
-                        }
-                    }
-                });
-
-                panel.onDidDispose(() => { eventSub.dispose(); });
-            })
         );
 
         // Inline Autocomplete — Tab to accept ghost text
@@ -384,6 +251,5 @@ export function deactivate(): void {
         }
         forge?.dispose();
         statusBar?.dispose();
-        sidebarProvider?.dispose();
     } catch { /* swallow */ }
 }

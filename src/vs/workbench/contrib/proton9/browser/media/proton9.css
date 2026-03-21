@@ -1,0 +1,262 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.proton9-pane {
+	padding: 10px 12px;
+}
+
+.proton9-pane-body {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.proton9-pane-header,
+.proton9-toolbar,
+.proton9-session-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+.proton9-pane-header {
+	justify-content: space-between;
+}
+
+.proton9-title-row {
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	gap: 8px;
+	min-width: 0;
+	flex: 1;
+	overflow: hidden;
+}
+
+.proton9-title-row h3,
+.proton9-title-row .proton9-card-title {
+	margin: 0;
+}
+
+.proton9-title-label {
+	min-width: 0;
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.proton9-session-tabs {
+	display: flex;
+	align-items: center;
+	flex-wrap: nowrap;
+	gap: 6px;
+	min-width: 0;
+	flex: 0 1 auto;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+}
+
+.proton9-session-tabs::-webkit-scrollbar {
+	display: none;
+}
+
+.proton9-session-tab {
+	border-radius: 999px;
+	padding: 3px 9px;
+	min-width: 0;
+	font-size: 11px;
+	line-height: 1.2;
+}
+
+.proton9-session-tab:not(.proton9-button-primary) {
+	background: color-mix(in srgb, var(--vscode-sideBarSectionHeader-background, transparent) 70%, transparent);
+}
+
+.proton9-session-tab-add {
+	font-weight: 700;
+}
+
+.proton9-button {
+	border: 1px solid var(--vscode-input-border, transparent);
+	background: var(--vscode-button-secondaryBackground);
+	color: var(--vscode-button-secondaryForeground);
+	border-radius: 6px;
+	padding: 6px 10px;
+	cursor: pointer;
+}
+
+.proton9-button:hover:not([disabled]) {
+	filter: brightness(1.06);
+}
+
+.proton9-button[disabled] {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.proton9-button-primary {
+	background: var(--vscode-button-background);
+	color: var(--vscode-button-foreground);
+}
+
+.proton9-button-danger {
+	background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 42%, var(--vscode-button-secondaryBackground));
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-button-secondaryForeground));
+}
+
+.proton9-card,
+.proton9-session-item,
+.proton9-section,
+.proton9-action-entry,
+.proton9-transcript-entry {
+	border: 1px solid var(--vscode-panel-border, transparent);
+	border-radius: 10px;
+	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+}
+
+.proton9-card,
+.proton9-section {
+	padding: 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.proton9-card-title {
+	font-weight: 600;
+}
+
+.proton9-meta-line,
+.proton9-entry-kind {
+	color: var(--vscode-descriptionForeground);
+	font-size: 11px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.proton9-meta-chip {
+	color: var(--vscode-badge-foreground);
+	background: var(--vscode-badge-background);
+	border-radius: 999px;
+	padding: 2px 8px;
+	font-size: 11px;
+}
+
+.proton9-composer {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.proton9-input {
+	width: 100%;
+	min-height: 100px;
+	resize: vertical;
+	border-radius: 8px;
+	padding: 10px;
+	border: 1px solid var(--vscode-input-border, transparent);
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	font: inherit;
+	box-sizing: border-box;
+}
+
+.proton9-transcript-list,
+.proton9-action-list {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-top: 8px;
+}
+
+.proton9-transcript-entry,
+.proton9-action-entry,
+.proton9-session-item {
+	border-radius: 8px;
+	padding: 8px 10px;
+	background: color-mix(in srgb, var(--vscode-sideBarSectionHeader-background, transparent) 65%, transparent);
+}
+
+.proton9-transcript-user {
+	background: color-mix(in srgb, var(--vscode-button-background) 16%, transparent);
+}
+
+.proton9-transcript-assistant {
+	background: color-mix(in srgb, var(--vscode-textCodeBlock-background) 55%, transparent);
+}
+
+.proton9-transcript-info {
+	background: color-mix(in srgb, var(--vscode-editorInfo-background) 35%, transparent);
+}
+
+.proton9-transcript-summary {
+	background: color-mix(in srgb, var(--vscode-editorHint-background) 35%, transparent);
+}
+
+.proton9-transcript-error,
+.proton9-action-result {
+	background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 38%, transparent);
+}
+
+.proton9-action-action {
+	background: color-mix(in srgb, var(--vscode-editorInfo-background) 22%, transparent);
+}
+
+.proton9-entry-header {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-bottom: 6px;
+}
+
+.proton9-entry-kind {
+	padding: 2px 6px;
+	border-radius: 999px;
+	background: var(--vscode-badge-background);
+	color: var(--vscode-badge-foreground);
+}
+
+.proton9-action-label {
+	font-weight: 600;
+}
+
+.proton9-entry-text {
+	white-space: pre-wrap;
+	word-break: break-word;
+	line-height: 1.4;
+}
+
+.proton9-session-list {
+	list-style: none;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 0;
+	margin: 0;
+}
+
+.proton9-session-item {
+	padding: 8px 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.proton9-empty {
+	color: var(--vscode-descriptionForeground);
+	padding: 8px 0;
+}
+
+.proton9-error-banner {
+	color: var(--vscode-inputValidation-errorForeground, var(--vscode-editorError-foreground));
+	background: color-mix(in srgb, var(--vscode-inputValidation-errorBackground) 45%, transparent);
+	border: 1px solid color-mix(in srgb, var(--vscode-inputValidation-errorBorder, transparent) 80%, transparent);
+	border-radius: 8px;
+	padding: 8px 10px;
+}

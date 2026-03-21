@@ -214,7 +214,7 @@ export function activate(context: vscode.ExtensionContext) {
 					const endEmitter = new vscode.EventEmitter<void>();
 
 					await new Promise((res, rej) => {
-						remoteSocket.on('data', d => dataEmitter.fire(d))
+						remoteSocket.on('data', d => dataEmitter.fire(new Uint8Array(d)))
 							.on('error', err => { rej(); closeEmitter.fire(err); })
 							.on('close', () => endEmitter.fire())
 							.on('end', () => endEmitter.fire())
@@ -269,14 +269,14 @@ export function activate(context: vscode.ExtensionContext) {
 
 					proxySocket.on('data', async (data) => {
 						await maybeSlowdown();
-						remoteReady = remoteSocket.write(data);
+						remoteReady = remoteSocket.write(new Uint8Array(data));
 						if (!remoteReady) {
 							proxySocket.pause();
 						}
 					});
 					remoteSocket.on('data', async (data) => {
 						await maybeSlowdown();
-						localReady = proxySocket.write(data);
+						localReady = proxySocket.write(new Uint8Array(data));
 						if (!localReady) {
 							remoteSocket.pause();
 						}

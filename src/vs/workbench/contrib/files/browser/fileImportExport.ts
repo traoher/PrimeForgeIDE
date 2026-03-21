@@ -36,6 +36,11 @@ import { WebFileSystemAccess } from '../../../../platform/files/browser/webFileS
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 
+function toArrayBuffer(data: VSBuffer | Uint8Array): ArrayBuffer {
+	const bytes = data instanceof VSBuffer ? data.buffer : data;
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 //#region Browser File Upload (drag and drop, input element)
 
 interface IBrowserUploadOperation {
@@ -718,7 +723,7 @@ export class FileDownload {
 
 			listenStream(sourceStream, {
 				onData: data => {
-					target.write(data.buffer);
+					target.write(toArrayBuffer(data.buffer));
 					this.reportProgress(contents.name, contents.size, data.byteLength, operation);
 				},
 				onError: error => {
@@ -736,7 +741,7 @@ export class FileDownload {
 	private async downloadFileUnbufferedBrowser(resource: URI, target: FileSystemWritableFileStream, operation: IDownloadOperation, token: CancellationToken): Promise<void> {
 		const contents = await this.fileService.readFile(resource, undefined, token);
 		if (!token.isCancellationRequested) {
-			target.write(contents.value.buffer);
+			target.write(toArrayBuffer(contents.value.buffer));
 			this.reportProgress(contents.name, contents.size, contents.value.byteLength, operation);
 		}
 

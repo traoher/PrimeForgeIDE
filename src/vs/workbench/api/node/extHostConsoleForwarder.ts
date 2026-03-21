@@ -57,7 +57,7 @@ export class ExtHostConsoleForwarder extends AbstractExtHostConsoleForwarder {
 					}
 				}
 
-				original.call(stream, chunk, encoding, callback);
+				original.call(stream, chunk, encoding, callback as ((err?: Error | null | undefined) => void) | undefined);
 			},
 		});
 	}

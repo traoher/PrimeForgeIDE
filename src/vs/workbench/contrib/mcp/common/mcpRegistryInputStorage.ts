@@ -13,6 +13,11 @@ import { ISecretStorageService } from '../../../../platform/secrets/common/secre
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { IResolvedValue } from '../../../services/configurationResolver/common/configurationResolverExpression.js';
 
+function toArrayBuffer(data: VSBuffer | Uint8Array): ArrayBuffer {
+	const bytes = data instanceof VSBuffer ? data.buffer : data;
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 const MCP_ENCRYPTION_KEY_NAME = 'mcpEncryptionKey';
 const MCP_ENCRYPTION_KEY_ALGORITHM = 'AES-GCM';
 const MCP_ENCRYPTION_KEY_LEN = 256;
@@ -163,9 +168,9 @@ export class McpRegistryInputStorage extends Disposable {
 			const encrypted = decodeBase64(this._record.value.secrets.value);
 
 			const decrypted = await crypto.subtle.decrypt(
-				{ name: MCP_ENCRYPTION_KEY_ALGORITHM, iv: iv.buffer },
+				{ name: MCP_ENCRYPTION_KEY_ALGORITHM, iv: toArrayBuffer(iv) },
 				key,
-				encrypted.buffer,
+				toArrayBuffer(encrypted),
 			);
 
 			const unsealedSecrets = JSON.parse(new TextDecoder().decode(decrypted));

@@ -14,8 +14,12 @@ import { IWorkbenchContribution, WorkbenchPhase, registerWorkbenchContribution2 
 import { ViewPaneContainer } from '../../../browser/parts/views/viewPaneContainer.js';
 import { Extensions as ViewContainerExtensions, IViewContainersRegistry, IViewsRegistry, ViewContainerLocation } from '../../../common/views.js';
 import { P9SessionService } from '../browser/proton9SessionService.js';
-import { P9_CHAT_VIEW_ID, P9_VIEW_CONTAINER_ID } from '../common/proton9Types.js';
-import { Proton9SessionView } from '../browser/proton9View.js';
+import { P9_ACTION_FEED_VIEW_ID, P9_CHAT_VIEW_ID, P9_SESSIONS_VIEW_ID, P9_STATUS_VIEW_ID, P9_VIEW_CONTAINER_ID } from '../common/proton9Types.js';
+import '../browser/proton9RuntimeService.js';
+import { Proton9ActionFeedView } from '../browser/proton9ActionFeedView.js';
+import { Proton9ChatView } from '../browser/proton9ChatView.js';
+import { Proton9SessionsView } from '../browser/proton9SessionsView.js';
+import { Proton9StatusView } from '../browser/proton9StatusView.js';
 
 registerSingleton(IP9SessionService, P9SessionService, InstantiationType.Delayed);
 
@@ -32,12 +36,33 @@ const proton9ViewContainer = Registry.as<IViewContainersRegistry>(ViewContainerE
 }, ViewContainerLocation.Sidebar);
 
 Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry).registerViews([{
-	id: P9_CHAT_VIEW_ID,
+	id: P9_SESSIONS_VIEW_ID,
 	name: nls.localize2('proton9Sessions', "P9 Sessions"),
 	containerIcon: proton9ViewIcon,
 	canToggleVisibility: true,
 	canMoveView: true,
-	ctorDescriptor: new SyncDescriptor(Proton9SessionView),
+	ctorDescriptor: new SyncDescriptor(Proton9SessionsView),
+}, {
+	id: P9_CHAT_VIEW_ID,
+	name: nls.localize2('proton9Chat', "P9 Chat"),
+	containerIcon: proton9ViewIcon,
+	canToggleVisibility: true,
+	canMoveView: true,
+	ctorDescriptor: new SyncDescriptor(Proton9ChatView),
+}, {
+	id: P9_ACTION_FEED_VIEW_ID,
+	name: nls.localize2('proton9Actions', "P9 Actions"),
+	containerIcon: proton9ViewIcon,
+	canToggleVisibility: true,
+	canMoveView: true,
+	ctorDescriptor: new SyncDescriptor(Proton9ActionFeedView),
+}, {
+	id: P9_STATUS_VIEW_ID,
+	name: nls.localize2('proton9Status', "P9 Status"),
+	containerIcon: proton9ViewIcon,
+	canToggleVisibility: true,
+	canMoveView: true,
+	ctorDescriptor: new SyncDescriptor(Proton9StatusView),
 }], proton9ViewContainer);
 
 class Proton9BootstrapContribution implements IWorkbenchContribution {

@@ -1069,7 +1069,7 @@ async function webviewPreloads(ctx: PreloadContext) {
 				},
 
 				blob(): Blob {
-					return new Blob([valueBytes], { type: this.mime });
+					return new Blob([valueBytes.buffer.slice(valueBytes.byteOffset, valueBytes.byteOffset + valueBytes.byteLength) as ArrayBuffer], { type: this.mime });
 				},
 
 				get _allOutputItems() {
@@ -2519,7 +2519,8 @@ async function webviewPreloads(ctx: PreloadContext) {
 				},
 
 				blob(): Blob {
-					return new Blob([this.data()], { type: this.mime });
+					const data = this.data();
+					return new Blob([data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer], { type: this.mime });
 				},
 
 				_allOutputItems: [{

@@ -37,7 +37,8 @@ export function serializeWebviewMessage(
 			} else if (ArrayBuffer.isView(value)) {
 				const type = getTypedArrayType(value);
 				if (type) {
-					const index = arrayBuffers.add(value.buffer);
+					const buffer = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength) as ArrayBuffer;
+					const index = arrayBuffers.add(buffer);
 					return {
 						$$vscode_array_buffer_reference$$: true,
 						index,

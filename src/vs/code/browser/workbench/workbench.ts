@@ -22,6 +22,11 @@ import { AuthenticationSessionInfo } from '../../../workbench/services/authentic
 import type { IURLCallbackProvider } from '../../../workbench/services/url/browser/urlService.js';
 import { create } from '../../../workbench/workbench.web.main.internal.js';
 
+function toArrayBuffer(data: VSBuffer | Uint8Array): ArrayBuffer {
+	const bytes = data instanceof VSBuffer ? data.buffer : data;
+	return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 interface ISecretStorageCrypto {
 	seal(data: string): Promise<string>;
 	unseal(data: string): Promise<string>;
@@ -109,9 +114,9 @@ class ServerKeyedAESCrypto implements ISecretStorageCrypto {
 		// Do the decryption and parse the result as JSON
 		const key = await this.getKey(clientKey.buffer);
 		const decrypted = await mainWindow.crypto.subtle.decrypt(
-			{ name: AESConstants.ALGORITHM as const, iv: iv.buffer },
+			{ name: AESConstants.ALGORITHM as const, iv: toArrayBuffer(iv) },
 			key,
-			cipherText.buffer
+			toArrayBuffer(cipherText)
 		);
 
 		return new TextDecoder().decode(new Uint8Array(decrypted));

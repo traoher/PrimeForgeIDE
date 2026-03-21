@@ -13,6 +13,7 @@ const child_process_1 = require("child_process");
 const fs_1 = require("fs");
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const rootDir = path_1.default.resolve(__dirname, '..', '..');
+const gulpScript = path_1.default.join(rootDir, 'node_modules', 'gulp', 'bin', 'gulp.js');
 function runProcess(command, args = []) {
     return new Promise((resolve, reject) => {
         const child = (0, child_process_1.spawn)(command, args, { cwd: rootDir, stdio: 'inherit', env: process.env, shell: process.platform === 'win32' });
@@ -38,14 +39,32 @@ async function getElectron() {
     await runProcess(npm, ['run', 'electron']);
 }
 async function ensureCompiled() {
-    if (!(await exists('out'))) {
+    const requiredOutputs = [
+        'out/vs/workbench/workbench.desktop.main.js',
+        'out/vs/workbench/contrib/proton9/electron-sandbox/proton9.contribution.js',
+    ];
+    const missingOutput = !(await Promise.all(requiredOutputs.map(exists))).every(Boolean);
+    if (missingOutput) {
         await runProcess(npm, ['run', 'compile']);
+    }
+}
+async function ensureExtensionsCompiled() {
+    const requiredOutputs = [
+        'extensions/git-base/out/extension.js',
+        'extensions/git-base/dist/browser/extension.js',
+        'extensions/emmet/out/node/emmetNodeMain.js',
+        'extensions/emmet/dist/browser/emmetBrowserMain.js',
+    ];
+    const missingOutput = !(await Promise.all(requiredOutputs.map(exists))).every(Boolean);
+    if (missingOutput) {
+        await runProcess(process.execPath, [gulpScript, 'compile-extensions']);
     }
 }
 async function main() {
     await ensureNodeModules();
     await getElectron();
     await ensureCompiled();
+    await ensureExtensionsCompiled();
     // Can't require this until after dependencies are installed
     const { getBuiltInExtensions } = require('./builtInExtensions');
     await getBuiltInExtensions();

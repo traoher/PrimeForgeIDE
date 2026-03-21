@@ -131,7 +131,7 @@ function pipeLoggingToParent(): void {
 					buf = buf.slice(eol + 1);
 				}
 
-				original.call(stream, chunk, encoding, callback);
+				original.call(stream, chunk, encoding, callback as ((err?: Error | null | undefined) => void) | undefined);
 			},
 		});
 	}
