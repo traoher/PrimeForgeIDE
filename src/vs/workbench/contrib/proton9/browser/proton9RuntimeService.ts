@@ -12,10 +12,10 @@ import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { IMarkerData, IMarkerService, MarkerSeverity } from '../../../../platform/markers/common/markers.js';
-import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
+import { registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { IP9SessionService } from '../common/proton9Service.js';
 import { IP9RuntimeService, P9RuntimeEvent } from '../common/proton9RuntimeService.js';
-import { IP9ActionEntry, IP9ConnectionState, IP9NativeSession, IP9RuntimeStatusSnapshot, IP9TranscriptEntry } from '../common/proton9Types.js';
+import { IP9ActionEntry, IP9ConnectionState, IP9DiagnosticEntry, IP9EditorContext, IP9MentionedFile, IP9NativeSession, IP9RuntimeStatusSnapshot, IP9TranscriptEntry, P9RoutingLane, P9TerminalState } from '../common/proton9Types.js';
 import { P9BackendClient } from './proton9BackendClient.js';
 import { P9RuntimeStore } from './proton9RuntimeStore.js';
 
@@ -57,6 +57,14 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 	private readonly runtimeStore: P9RuntimeStore;
 	private readonly activeAssistantEntryIds = new Map<string, string>();
 	private readonly connectionState: IP9ConnectionState = { connected: false, connecting: true };
+	private readonly laneByTab = new Map<string, P9RoutingLane>();
+	private readonly routingReasonByTab = new Map<string, string>();
+	private readonly routingEventIdByTab = new Map<string, string>();
+	private readonly terminalStateByTab = new Map<string, P9TerminalState>();
+	private readonly terminalEventIdByTab = new Map<string, string>();
+	private readonly blockIdByTab = new Map<string, string>();
+	private readonly blockCategoryByTab = new Map<string, string>();
+	private readonly requiredActionByTab = new Map<string, string>();
 	private lastTool: string | undefined;
 	private lastCommand: string | undefined;
 	private lastResourcePath: string | undefined;
@@ -73,6 +81,7 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		@IMarkerService private readonly markerService: IMarkerService,
 	) {
 		super();
+		this._autocompleteEnabled = true;
 		this.runtimeStore = this._register(new P9RuntimeStore(storageService));
 		this.runtimeStore.syncSessions(this.p9SessionService.getSessions().map(session => session.tabId));
 		this._register(this.p9SessionService.onDidChangeSessions(() => {
@@ -149,12 +158,21 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		return { ...this.connectionState };
 	}
 
-	getStatusSnapshot(): IP9RuntimeStatusSnapshot {
+	getStatusSnapshot(tabId?: string): IP9RuntimeStatusSnapshot {
+		const targetTabId = tabId ?? this.getActiveSession()?.tabId;
 		return {
 			lastTool: this.lastTool,
 			lastCommand: this.lastCommand,
 			lastResourcePath: this.lastResourcePath,
 			diagnosticCount: this.markerService.read({ owner: P9_MARKER_OWNER }).length,
+			currentLane: targetTabId ? this.laneByTab.get(targetTabId) : undefined,
+			routingReason: targetTabId ? this.routingReasonByTab.get(targetTabId) : undefined,
+			routingEventId: targetTabId ? this.routingEventIdByTab.get(targetTabId) : undefined,
+			terminalState: targetTabId ? this.terminalStateByTab.get(targetTabId) : undefined,
+			terminalEventId: targetTabId ? this.terminalEventIdByTab.get(targetTabId) : undefined,
+			blockId: targetTabId ? this.blockIdByTab.get(targetTabId) : undefined,
+			blockCategory: targetTabId ? this.blockCategoryByTab.get(targetTabId) : undefined,
+			requiredAction: targetTabId ? this.requiredActionByTab.get(targetTabId) : undefined,
 		};
 	}
 
@@ -209,6 +227,7 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		}
 
 		this.clearSessionMarkers(tabId);
+		this.clearRoutingState(tabId);
 		this.runtimeStore.clearSessionState(tabId);
 		this.activeAssistantEntryIds.delete(tabId);
 		this.p9SessionService.updateSessionStatus(tabId, 'idle');
@@ -226,6 +245,7 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		}
 
 		this.clearSessionMarkers(tabId);
+		this.clearRoutingState(tabId);
 		this.runtimeStore.removeSessionState(tabId);
 		this.activeAssistantEntryIds.delete(tabId);
 		this.p9SessionService.removeSession(tabId);
@@ -271,8 +291,14 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		this.p9SessionService.updateSessionStatus(tabId, 'running');
 		this._onDidChangeState.fire({ kind: 'sessions', tabId });
 
+		// Capture editor context snapshot for the backend
+		const editorContext = this.captureEditorContext();
+
+		// Parse @mentions from prompt: @file:path/to/file or @path/to/file
+		const mentionedFiles = this.parseMentions(trimmedTask, session.workspacePath);
+
 		try {
-			await this.backendClient.runTask(session, trimmedTask);
+			await this.backendClient.runTask(session, trimmedTask, editorContext, mentionedFiles);
 		} catch (error) {
 			this.p9SessionService.updateSessionStatus(tabId, 'error');
 			this.appendTranscriptEntry(tabId, 'error', this.errorMessage(error));
@@ -329,9 +355,34 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 				if (!session) {
 					return;
 				}
+				this.terminalStateByTab.delete(session.tabId);
+				this.terminalEventIdByTab.delete(session.tabId);
+				this.blockIdByTab.delete(session.tabId);
+				this.blockCategoryByTab.delete(session.tabId);
+				this.requiredActionByTab.delete(session.tabId);
 				this.p9SessionService.updateSessionStatus(session.tabId, 'running');
 				this.ensureAssistantEntry(session.tabId);
 				this._onDidChangeState.fire({ kind: 'sessions', tabId: session.tabId });
+				break;
+			case 'route_decision':
+				if (!session) {
+					return;
+				}
+				if (typeof data?.mode === 'string') {
+					this.laneByTab.set(session.tabId, data.mode);
+				}
+				if (typeof data?.reason === 'string') {
+					this.routingReasonByTab.set(session.tabId, data.reason);
+				}
+				if (typeof data?.event_id === 'string') {
+					this.routingEventIdByTab.set(session.tabId, data.event_id);
+				}
+				this.terminalStateByTab.delete(session.tabId);
+				this.terminalEventIdByTab.delete(session.tabId);
+				this.blockIdByTab.delete(session.tabId);
+				this.blockCategoryByTab.delete(session.tabId);
+				this.requiredActionByTab.delete(session.tabId);
+				this._onDidChangeState.fire({ kind: 'status', tabId: session.tabId });
 				break;
 			case 'llm_token':
 				if (!session) {
@@ -376,6 +427,31 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 				this.finishAssistantEntry(session.tabId);
 				this._onDidChangeState.fire({ kind: 'sessions', tabId: session.tabId });
 				break;
+			case 'project_terminal':
+				if (!session) {
+					return;
+				}
+				if (typeof data?.terminal_state === 'string') {
+					this.terminalStateByTab.set(session.tabId, data.terminal_state);
+				}
+				if (typeof data?.event_id === 'string') {
+					this.terminalEventIdByTab.set(session.tabId, data.event_id);
+				}
+				if (typeof data?.block_id === 'string') {
+					this.blockIdByTab.set(session.tabId, data.block_id);
+				}
+				if (typeof data?.block_category === 'string') {
+					this.blockCategoryByTab.set(session.tabId, data.block_category);
+				}
+				if (typeof data?.required_action === 'string') {
+					this.requiredActionByTab.set(session.tabId, data.required_action);
+				}
+				if (data?.terminal_state === 'blocked' || data?.terminal_state === 'design_change_required') {
+					this.p9SessionService.updateSessionStatus(session.tabId, 'error');
+					this.appendTranscriptEntry(session.tabId, data?.terminal_state === 'blocked' ? 'error' : 'assistant', String(data?.summary ?? 'Project task requires attention.'));
+				}
+				this._onDidChangeState.fire({ kind: 'status', tabId: session.tabId });
+				break;
 			case 'slot_complete':
 				if (!session) {
 					return;
@@ -408,6 +484,17 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 			return this.p9SessionService.getSessions().find(candidate => candidate.slotId === slotId);
 		}
 		return this.p9SessionService.getActiveSession();
+	}
+
+	private clearRoutingState(tabId: string): void {
+		this.laneByTab.delete(tabId);
+		this.routingReasonByTab.delete(tabId);
+		this.routingEventIdByTab.delete(tabId);
+		this.terminalStateByTab.delete(tabId);
+		this.terminalEventIdByTab.delete(tabId);
+		this.blockIdByTab.delete(tabId);
+		this.blockCategoryByTab.delete(tabId);
+		this.requiredActionByTab.delete(tabId);
 	}
 
 	private appendTranscriptEntry(tabId: string, kind: IP9TranscriptEntry['kind'], text: string): IP9TranscriptEntry {
@@ -606,6 +693,119 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 		}
 	}
 
+	private captureEditorContext(): IP9EditorContext | undefined {
+		const editorControl = this.editorService.activeTextEditorControl;
+		if (!editorControl) {
+			return undefined;
+		}
+
+		const context: IP9EditorContext = {};
+
+		// Active file path
+		const model = editorControl.getModel?.();
+		const resource = model && 'uri' in model ? (model as { uri: URI }).uri : undefined;
+		if (resource?.scheme === 'file') {
+			context.active_file = resource.fsPath;
+		}
+
+		// Cursor position
+		const position = editorControl.getPosition?.();
+		if (position) {
+			context.cursor_line = position.lineNumber;
+		}
+
+		// Selection (capped at 2000 chars to avoid payload bloat)
+		const selection = editorControl.getSelection?.();
+		if (selection && model && 'getValueInRange' in model) {
+			const selectedText = (model as { getValueInRange: (range: unknown) => string }).getValueInRange(selection);
+			if (selectedText && selectedText.length > 0) {
+				context.selection = selectedText.length > 2000
+					? selectedText.substring(0, 2000) + '\n... (truncated)'
+					: selectedText;
+			}
+		}
+
+		// Visible range
+		const getVisibleRanges = (editorControl as { getVisibleRanges?: () => Array<{ startLineNumber: number; endLineNumber: number }> }).getVisibleRanges;
+		if (typeof getVisibleRanges === 'function') {
+			const visibleRanges = getVisibleRanges.call(editorControl);
+			if (visibleRanges && visibleRanges.length > 0) {
+				context.visible_range = {
+					start: visibleRanges[0].startLineNumber,
+					end: visibleRanges[visibleRanges.length - 1].endLineNumber,
+				};
+			}
+		}
+
+		// Open files (all unique file URIs from open editors, capped at 20)
+		const openFiles: string[] = [];
+		for (const editorInput of this.editorService.editors) {
+			const inputResource = editorInput.resource;
+			if (inputResource?.scheme === 'file' && !openFiles.includes(inputResource.fsPath)) {
+				openFiles.push(inputResource.fsPath);
+				if (openFiles.length >= 20) {
+					break;
+				}
+			}
+		}
+		if (openFiles.length > 0) {
+			context.open_files = openFiles;
+		}
+
+		// Diagnostics for the active file (errors and warnings only, capped at 20)
+		if (resource) {
+			const markers = this.markerService.read({ resource });
+			const diagnosticEntries: IP9DiagnosticEntry[] = [];
+			for (const marker of markers) {
+				if (marker.severity === MarkerSeverity.Error || marker.severity === MarkerSeverity.Warning) {
+					diagnosticEntries.push({
+						file: resource.fsPath,
+						line: marker.startLineNumber,
+						severity: marker.severity === MarkerSeverity.Error ? 'error' : 'warning',
+						message: marker.message,
+					});
+					if (diagnosticEntries.length >= 20) {
+						break;
+					}
+				}
+			}
+			if (diagnosticEntries.length > 0) {
+				context.diagnostics = diagnosticEntries;
+			}
+		}
+
+		return context;
+	}
+
+	private parseMentions(prompt: string, workspacePath?: string): IP9MentionedFile[] {
+		const mentions: IP9MentionedFile[] = [];
+		const seen = new Set<string>();
+
+		// Match @file:path/to/file or @relative/path.ext (must contain a dot or slash)
+		const mentionRegex = /@file:([^\s]+)|@([^\s@]+\.[a-zA-Z0-9]+)|@([^\s@]*\/[^\s@]+)/g;
+		let match: RegExpExecArray | null;
+		while ((match = mentionRegex.exec(prompt)) !== null) {
+			const rawPath = match[1] ?? match[2] ?? match[3];
+			if (!rawPath || seen.has(rawPath)) {
+				continue;
+			}
+			seen.add(rawPath);
+
+			// Resolve: if path is relative and workspace is available, join them
+			let resolvedPath = rawPath;
+			if (workspacePath && !rawPath.match(/^[A-Za-z]:\\/) && !rawPath.startsWith('/')) {
+				resolvedPath = `${workspacePath}/${rawPath}`.replace(/\\/g, '/');
+			}
+
+			mentions.push({ path: resolvedPath, content: '' });
+			if (mentions.length >= 5) {
+				break;
+			}
+		}
+
+		return mentions;
+	}
+
 	private getSessionOrThrow(tabId: string): IP9NativeSession {
 		const session = this.p9SessionService.getSessions().find(candidate => candidate.tabId === tabId);
 		if (!session) {
@@ -627,6 +827,14 @@ export class P9RuntimeService extends Disposable implements IP9RuntimeService {
 	private errorMessage(error: unknown): string {
 		return error instanceof Error ? error.message : String(error);
 	}
+
+	// ── Autocomplete ────────────────────────────────────────────────────
+	private _autocompleteEnabled: boolean = true;
+
+	toggleAutocomplete(): boolean {
+		this._autocompleteEnabled = !this._autocompleteEnabled;
+		return this._autocompleteEnabled;
+	}
 }
 
-registerSingleton(IP9RuntimeService, P9RuntimeService, InstantiationType.Delayed);
+registerSingleton(IP9RuntimeService, P9RuntimeService, true);

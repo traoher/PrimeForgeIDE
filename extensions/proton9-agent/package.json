@@ -1,7 +1,7 @@
 {
     "name": "proton9-agent",
     "displayName": "Proton9 Agent",
-    "description": "AI coding agent — autonomous task execution, file editing, and shell commands",
+    "description": "Proton9 server launcher — spawns and manages the P9 Python backend",
     "version": "0.3.0",
     "engines": {
         "vscode": "*"
@@ -16,20 +16,8 @@
     "contributes": {
         "commands": [
             {
-                "command": "Proton9.sendTask",
-                "title": "Proton9: Run Task"
-            },
-            {
-                "command": "Proton9.stop",
-                "title": "Proton9: Stop Task"
-            },
-            {
-                "command": "Proton9.reconnect",
-                "title": "Proton9: Reconnect"
-            },
-            {
-                "command": "Proton9.openChat",
-                "title": "Proton9: Open Chat"
+                "command": "Proton9.restartServer",
+                "title": "Proton9: Restart Server"
             }
         ],
         "configuration": {
@@ -60,7 +48,5 @@
         "esbuild": "^0.27.3",
         "typescript": "^5.3.0"
     },
-    "dependencies": {
-        "ws": "^8.16.0"
-    }
+    "dependencies": {}
 }

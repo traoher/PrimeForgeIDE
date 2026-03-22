@@ -24,7 +24,7 @@ from core.llm_gateway import LLMGateway
 from core.safety import SafetyRails, SafetyError
 from core.prompts import SYSTEM_PROMPT, TOOL_RESULT_TEMPLATE, COMPLEXITY_GATE_PROMPT, PLANNER_PROMPT
 from tools.base import ToolRegistry, ToolResult
-from tools.file_ops import FileReadTool, FileWriteTool, FileMultiReplaceTool, FileSearchTool, FileListTool, DoneTool, BatchReadTool, PlanTool
+from tools.file_ops import FileReadTool, FileWriteTool, FileMultiReplaceTool, ReplaceFileContentTool, FileSearchTool, FileListTool, DoneTool, BatchReadTool, PlanTool
 from tools.code_search import CodeSearchTool
 from tools.shell import ShellExecTool
 from tools.test_runner import TestRunTool
@@ -78,7 +78,7 @@ class ActionLog:
         self.actions.append(entry)
 
         # Track file changes
-        if tool_name in ("file_write", "multi_replace_file_content") and result.success:
+        if tool_name in ("file_write", "multi_replace_file_content", "replace_file_content") and result.success:
             self.files_changed.add(args.get("path", ""))
 
     def get_diff(self, path: str) -> str:
@@ -171,7 +171,7 @@ class Agent(PlannerMixin, RemediationMixin):
                 print(f"Warning: Could not load config: {e}")
 
         # Priority: constructor arg > YAML config > env var > default
-        final_provider = provider or llm_config.get("provider") or os.getenv("Proton9_PROVIDER") or "deepseek"
+        final_provider = provider or llm_config.get("provider") or os.getenv("Proton9_PROVIDER") or "gemini"
         final_model = model or llm_config.get("model") or os.getenv("Proton9_MODEL")
         llm_fallback_provider = llm_config.get("fallback_provider")
         llm_call_timeout_seconds = llm_config.get("call_timeout_seconds")
@@ -292,6 +292,7 @@ class Agent(PlannerMixin, RemediationMixin):
         self.tools.register(BatchReadTool(safety=self.safety))
         self.tools.register(FileWriteTool(safety=self.safety))
         self.tools.register(FileMultiReplaceTool(safety=self.safety))
+        self.tools.register(ReplaceFileContentTool(safety=self.safety))
         self.tools.register(FileSearchTool())
         self.tools.register(CodeSearchTool(working_dir=self.working_dir))
         from tools.symbol_search import SymbolSearchTool
@@ -538,6 +539,18 @@ class Agent(PlannerMixin, RemediationMixin):
             except Exception as e:
                 print(f"  [MEMORY] Pre-task recall failed: {e}")
 
+        # ── Prior Plan Artifacts (last 5 from .proton9/plans/) ──
+        plan_context = self._load_recent_plan_artifacts(max_plans=5)
+        if plan_context:
+            system_prompt += (
+                "\n\n## Prior Plan Artifacts (READ-ONLY — last 5 plans from this project)\n"
+                "These are planning artifacts from previous sessions in this working directory. "
+                "Use them as context for what was already planned or attempted. "
+                "Do NOT re-do work that is already captured here unless the user asks.\n\n"
+                + plan_context
+            )
+            print(f"  [PLANS] Injected prior plan artifacts into prompt")
+
         # Initialize conversation
         self.messages = [
             {"role": "user", "content": system_prompt},
@@ -780,7 +793,7 @@ class Agent(PlannerMixin, RemediationMixin):
 
                 # Snapshot file before write/edit (for diff tracking AND auto-revert)
                 edited_path = None
-                if tool_name in ("file_write", "multi_replace_file_content") and "path" in tool_args:
+                if tool_name in ("file_write", "multi_replace_file_content", "replace_file_content") and "path" in tool_args:
                     edited_path = tool_args["path"]
                     # Lazy git checkpoint: only on FIRST file edit (skip for read-only tasks)
                     if not hasattr(self, '_git_checkpoint_done'):
@@ -863,20 +876,26 @@ class Agent(PlannerMixin, RemediationMixin):
                     # Emit task_artifact event for plan/walkthrough/analysis tools
                     if tool_name == "plan" and result.success:
                         plan_title = tool_args.get("title", "Artifact")
+                        plan_content = tool_args.get("content", "")
                         try:
                             self._event_callback("task_artifact", {
                                 "title": plan_title,
-                                "content": tool_args.get("content", ""),
+                                "content": plan_content,
                                 "artifact_type": tool_args.get("artifact_type", "plan"),
                             })
                         except Exception:
                             pass
+                        # Persist to .proton9/plans/ for cross-session memory
+                        try:
+                            self._save_plan_artifact(plan_title, plan_content, session_id)
+                        except Exception as e:
+                            print(f"  [PLANS] Failed to persist plan artifact: {e}")
                         # Phase tracking: detect phase from plan title (P2, P3, P4, P7)
                         for pnum in [2, 3, 4, 7]:
                             ptag = f"P{pnum}"
                             if ptag in plan_title:
                                 self._phase = pnum
-                                self._phase_artifacts[pnum] = tool_args.get("content", "")
+                                self._phase_artifacts[pnum] = plan_content
                                 pname = self._phase_names.get(pnum, '')
                                 print(f"  [PHASE] → P{pnum}: {pname}")
                                 try:
@@ -1001,7 +1020,7 @@ class Agent(PlannerMixin, RemediationMixin):
 
                 # ── No-progress guard ──
                 current_files_count = len(self.log.files_changed)
-                if current_files_count > 0 or tool_name in ("file_write", "multi_replace_file_content"):
+                if current_files_count > 0 or tool_name in ("file_write", "multi_replace_file_content", "replace_file_content"):
                     last_progress_step = step
                 if step - last_progress_step > 15 and step > 15:
                     no_progress_warning = (
@@ -1249,7 +1268,7 @@ class Agent(PlannerMixin, RemediationMixin):
 
                         self._print_action(step, tool_name, tool_args)
 
-                        if tool_name in ("file_write", "multi_replace_file_content") and "path" in tool_args:
+                        if tool_name in ("file_write", "multi_replace_file_content", "replace_file_content") and "path" in tool_args:
                             self.log.snapshot_before(tool_args["path"])
 
                         result = tool.execute(**tool_args)
@@ -1643,7 +1662,75 @@ class Agent(PlannerMixin, RemediationMixin):
             self.messages, self._auto_test_step_holder
         )
 
+    def _save_plan_artifact(self, title: str, content: str, session_id: str) -> None:
+        """Persist a plan() artifact to .proton9/plans/ for cross-session memory."""
+        import json, re
+        from datetime import datetime
+        plans_dir = Path(self.working_dir) / ".proton9" / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        manifest_path = plans_dir / "manifest.json"
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        slug = re.sub(r"[^\w]+", "_", title.lower()).strip("_")[:40]
+        filename = f"{ts}_{slug}.md"
+        file_path = plans_dir / filename
+
+        # Write the plan markdown file
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(f"# {title}\n\n")
+            f.write(f"_Session: {session_id} | Saved: {ts}_\n\n")
+            f.write(content)
+
+        # Update manifest.json
+        manifest = []
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except Exception:
+                manifest = []
+        manifest.append({
+            "title": title,
+            "session_id": session_id,
+            "timestamp": ts,
+            "file": filename,
+        })
+        # Keep only last 50 entries
+        manifest = manifest[-50:]
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        print(f"  [PLANS] Saved: .proton9/plans/{filename}")
+
+    def _load_recent_plan_artifacts(self, max_plans: int = 5) -> str:
+        """Load the last N plan artifacts from .proton9/plans/ and format for context injection."""
+        import json
+        plans_dir = Path(self.working_dir) / ".proton9" / "plans"
+        manifest_path = plans_dir / "manifest.json"
+        if not manifest_path.exists():
+            return ""
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not manifest:
+            return ""
+
+        # Take last N entries (most recent)
+        recent = manifest[-max_plans:]
+        parts = []
+        for entry in reversed(recent):
+            file_path = plans_dir / entry["file"]
+            if not file_path.exists():
+                continue
+            file_content = file_path.read_text(encoding="utf-8")
+            # Truncate long plans to avoid context bloat (max 800 chars each)
+            if len(file_content) > 800:
+                file_content = file_content[:800] + "\n... [truncated]"
+            ts = entry.get("timestamp", "")[:15]
+            parts.append(f"### [{ts}] {entry['title']}\n{file_content}\n")
+
+        return "\n".join(parts) if parts else ""
+
     def _git_checkpoint(self, session_id: str):
+
         """
         Trial 7: Create a git stash checkpoint before the agent starts editing.
         If the task causes damage, user can `git stash pop` to recover.
@@ -1767,6 +1854,7 @@ class Agent(PlannerMixin, RemediationMixin):
             "file_read": "📖",
             "file_write": "✏️",
             "multi_replace_file_content": "🔧",
+            "replace_file_content": "🔧",
             "file_search": "🔍",
             "file_list": "📁",
             "shell_exec": "⚡",
@@ -1787,7 +1875,7 @@ class Agent(PlannerMixin, RemediationMixin):
             detail = args.get("path", ".")
         elif tool_name == "file_write":
             detail = f"{args.get('path', '')} ({len(args.get('content', ''))} chars)"
-        elif tool_name == "multi_replace_file_content":
+        elif tool_name in ("multi_replace_file_content", "replace_file_content"):
             detail = args.get("path", "")
         elif tool_name == "file_search":
             detail = f"'{args.get('query', '')}'"

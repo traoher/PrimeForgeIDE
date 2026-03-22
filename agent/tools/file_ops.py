@@ -132,6 +132,82 @@ class FileWriteTool(BaseTool):
             return ToolResult(success=False, output="", error=str(e))
 
 
+class ReplaceFileContentTool(BaseTool):
+    name = "replace_file_content"
+    description = "Replace a specific text block in a file with new text. Finds old_text by exact match (whitespace-sensitive). Best for small, precise edits (1-3 lines). Fails if old_text is not found or is ambiguous (found multiple times)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Path to the file to edit"},
+            "old_text": {"type": "string", "description": "The exact text to find and replace (must match exactly, including indentation)"},
+            "new_text": {"type": "string", "description": "The replacement text"},
+        },
+        "required": ["path", "old_text", "new_text"],
+    }
+
+    def __init__(self, safety=None):
+        self.safety = safety
+
+    def execute(self, path: str, old_text: str, new_text: str, **kwargs) -> ToolResult:
+        try:
+            abs_path = os.path.abspath(path)
+            if self.safety:
+                self.safety.check_path(abs_path)
+            if not os.path.exists(abs_path):
+                return ToolResult(success=False, output="", error=f"File not found: {abs_path}")
+
+            with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+
+            # Normalize line endings for matching
+            content_norm = content.replace("\r\n", "\n")
+            old_norm = old_text.replace("\r\n", "\n")
+            new_norm = new_text.replace("\r\n", "\n")
+
+            count = content_norm.count(old_norm)
+            if count == 0:
+                # Try to find a close match for better error message
+                old_lines = old_norm.strip().split("\n")
+                first_line = old_lines[0].strip() if old_lines else ""
+                hint = ""
+                if first_line:
+                    for i, line in enumerate(content_norm.split("\n"), 1):
+                        if first_line in line:
+                            hint = f"\nHint: Line {i} contains '{first_line}' but full match failed. Check indentation/whitespace."
+                            break
+                return ToolResult(
+                    success=False, output="",
+                    error=f"old_text not found in {abs_path}. The text must match exactly (including indentation).{hint}"
+                )
+            if count > 1:
+                return ToolResult(
+                    success=False, output="",
+                    error=f"old_text found {count} times in {abs_path}. Add more surrounding context to make it unique."
+                )
+
+            # Apply the replacement
+            new_content = content_norm.replace(old_norm, new_norm, 1)
+
+            if self.safety:
+                self.safety.check_file_size(new_content)
+
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(new_content)
+
+            # Count lines changed
+            old_line_count = len(old_norm.split("\n"))
+            new_line_count = len(new_norm.split("\n"))
+            delta = new_line_count - old_line_count
+            delta_str = f" ({'+' if delta > 0 else ''}{delta} lines)" if delta != 0 else ""
+
+            return ToolResult(
+                success=True,
+                output=f"Replaced {old_line_count} lines with {new_line_count} lines in {abs_path}{delta_str}"
+            )
+        except Exception as e:
+            return ToolResult(success=False, output="", error=str(e))
+
+
 class FileMultiReplaceTool(BaseTool):
     name = "multi_replace_file_content"
     description = "Use this tool to surgically edit a file line-by-line using an in-memory array. Submit an array of ReplacementChunks. StartLine and EndLine must be accurate. Use this for all file modifications to prevent corruption."
@@ -196,17 +272,42 @@ class FileMultiReplaceTool(BaseTool):
                 # The array is 0-indexed, but lines are 1-indexed
                 start_idx = start_line - 1
                 end_idx = min(end_line, total_lines)
-                
-                # We could do strict old_content verification here, but for now we trust the LLM's indices
-                # Let's apply the new content to our in-memory buffer array
+
+                # Verify old_content matches actual file content
+                if old_content:
+                    actual_block = "".join(lines[start_idx:end_idx])
+                    actual_stripped = actual_block.replace("\r", "").rstrip("\n")
+                    old_stripped = old_content.replace("\r", "").rstrip("\n")
+                    if actual_stripped != old_stripped:
+                        # Show the actual content so the LLM can self-correct
+                        actual_preview = actual_block[:300].replace("\n", "\\n")
+                        return ToolResult(
+                            success=False, output="",
+                            error=(
+                                f"old_content mismatch at lines {start_line}-{end_line}.\n"
+                                f"ACTUAL content at those lines:\n{actual_preview}\n\n"
+                                f"Re-read the file and use the exact content."
+                            )
+                        )
+
                 new_lines = new_content.splitlines(keepends=True)
                 
-                # Ensure the last line of the new content retains a newline if it's meant to
+                # Ensure the last line retains a newline
                 if new_content and not new_content.endswith("\n"):
                     new_lines[-1] += "\n"
 
+                # Indentation sanity check (warn, don't fail)
+                indent_warning = ""
+                if old_content and new_content:
+                    old_first = next((l for l in old_content.split("\n") if l.strip()), "")
+                    new_first = next((l for l in new_content.split("\n") if l.strip()), "")
+                    old_indent = len(old_first) - len(old_first.lstrip())
+                    new_indent = len(new_first) - len(new_first.lstrip())
+                    if old_indent != new_indent:
+                        indent_warning = f" ⚠️ INDENTATION CHANGED: old={old_indent} spaces, new={new_indent} spaces"
+
                 lines[start_idx:end_idx] = new_lines
-                applied_edits.append(f"Replaced lines {start_line}-{end_line}")
+                applied_edits.append(f"Replaced lines {start_line}-{end_line}{indent_warning}")
 
             # Re-compile the in-memory array back into a text file
             result_content = "".join(lines)

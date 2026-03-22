@@ -11,6 +11,8 @@ export const P9_STATUS_VIEW_ID = 'workbench.view.proton9.status';
 export const P9_MAX_SESSIONS = 9;
 
 export type P9SessionStatus = 'idle' | 'running' | 'stopped' | 'error';
+export type P9RoutingLane = 'conversation' | 'quick_edit' | 'project';
+export type P9TerminalState = 'completed' | 'blocked' | 'design_change_required' | 'cancelled';
 
 export type P9TranscriptEntryKind = 'user' | 'assistant' | 'info' | 'summary' | 'error';
 
@@ -45,6 +47,27 @@ export interface IP9NativeSession {
 	activeEnsembleId?: string;
 }
 
+export interface IP9DiagnosticEntry {
+	file: string;
+	line: number;
+	severity: 'error' | 'warning' | 'info';
+	message: string;
+}
+
+export interface IP9EditorContext {
+	active_file?: string;
+	cursor_line?: number;
+	selection?: string;
+	visible_range?: { start: number; end: number };
+	open_files?: string[];
+	diagnostics?: IP9DiagnosticEntry[];
+}
+
+export interface IP9MentionedFile {
+	path: string;
+	content: string;
+}
+
 export interface IP9RunTaskPayload {
 	type: 'run_task';
 	slot_id: string;
@@ -54,6 +77,8 @@ export interface IP9RunTaskPayload {
 	task: string;
 	provider?: string;
 	model?: string;
+	editor_context?: IP9EditorContext;
+	mentioned_files?: IP9MentionedFile[];
 }
 
 export interface IP9StopTaskPayload {
@@ -96,4 +121,12 @@ export interface IP9RuntimeStatusSnapshot {
 	lastCommand?: string;
 	lastResourcePath?: string;
 	diagnosticCount: number;
+	currentLane?: P9RoutingLane;
+	routingReason?: string;
+	routingEventId?: string;
+	terminalState?: P9TerminalState;
+	terminalEventId?: string;
+	blockId?: string;
+	blockCategory?: string;
+	requiredAction?: string;
 }

@@ -65,30 +65,24 @@ def verify_and_revert_if_broken(path: str, result, file_snapshots: dict):
         print(f"\n  🛡️ SYNTAX GATE: Compile check failed for {os.path.basename(abs_path)}")
         print(f"     {error_msg[:200]}")
 
-        # Auto-revert using the snapshot
+        # DON'T auto-revert! Keep the broken edit so:
+        # 1. The agent can see and fix the syntax error in the next step
+        # 2. git diff still shows the change (critical for SWE-bench)
+        # 3. Work is not silently lost
         snapshot = file_snapshots.get(abs_path)
         if snapshot is not None:
-            try:
-                with open(abs_path, "w", encoding="utf-8") as f:
-                    f.write(snapshot)
-                print(f"  🔄 REVERTED {os.path.basename(abs_path)} to pre-edit state")
-            except Exception as revert_err:
-                print(f"  ❌ REVERT FAILED: {revert_err}")
+            print(f"  ⚠️ KEEPING broken edit in {os.path.basename(abs_path)} (agent must fix syntax)")
         elif snapshot is None and abs_path in file_snapshots:
-            # File was new — delete it
-            try:
-                os.remove(abs_path)
-                print(f"  🗑️ REMOVED broken new file: {os.path.basename(abs_path)}")
-            except Exception:
-                pass
+            # File was new — keep it too
+            print(f"  ⚠️ KEEPING broken new file: {os.path.basename(abs_path)} (syntax error — agent must fix)")
 
         # Convert result to error so the LLM sees the failure
         from tools.base import ToolResult
         return ToolResult(
             success=False,
-            output=f"SYNTAX ERROR — your edit broke {os.path.basename(abs_path)} and was auto-reverted.\n"
+            output=f"SYNTAX ERROR in {os.path.basename(abs_path)} — your edit introduced a syntax error.\n"
                    f"Error: {error_msg[:500]}\n"
-                   f"You MUST fix the syntax issue in your next edit attempt.",
+                   f"The file is KEPT as-is. You MUST fix the syntax error in your next edit.",
             error=error_msg[:500],
         )
 

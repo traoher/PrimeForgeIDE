@@ -24,7 +24,7 @@ export interface IP9RuntimeService {
 	getSessions(): readonly IP9NativeSession[];
 	getActiveSession(): IP9NativeSession | undefined;
 	getConnectionState(): IP9ConnectionState;
-	getStatusSnapshot(): IP9RuntimeStatusSnapshot;
+	getStatusSnapshot(tabId?: string): IP9RuntimeStatusSnapshot;
 	getTranscriptEntries(tabId: string): readonly IP9TranscriptEntry[];
 	getActionEntries(tabId: string): readonly IP9ActionEntry[];
 	getComposerDraft(tabId: string): string;
@@ -44,4 +44,6 @@ export interface IP9RuntimeService {
 	openResource(path: string): Promise<void>;
 	showTerminal(): void;
 	revealSearch(): Promise<void>;
+
+	toggleAutocomplete(): boolean;
 }

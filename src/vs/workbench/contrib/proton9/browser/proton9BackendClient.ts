@@ -5,7 +5,7 @@
 
 import { Emitter } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { IP9ClearSessionPayload, IP9DeleteSessionPayload, IP9NativeSession, IP9RunTaskPayload, IP9StopTaskPayload, IP9SwitchSessionPayload } from '../common/proton9Types.js';
+import { IP9ClearSessionPayload, IP9DeleteSessionPayload, IP9EditorContext, IP9MentionedFile, IP9NativeSession, IP9RunTaskPayload, IP9StopTaskPayload, IP9SwitchSessionPayload } from '../common/proton9Types.js';
 
 export interface IP9BackendEvent {
 	type: string;
@@ -129,9 +129,9 @@ export class P9BackendClient extends Disposable {
 		return this.socket?.readyState === WebSocket.OPEN;
 	}
 
-	async runTask(session: IP9NativeSession, task: string): Promise<void> {
+	async runTask(session: IP9NativeSession, task: string, editorContext?: IP9EditorContext, mentionedFiles?: IP9MentionedFile[]): Promise<void> {
 		await this.ensureConnected();
-		this.send(this.createRunTaskPayload(session, task));
+		this.send(this.createRunTaskPayload(session, task, editorContext, mentionedFiles));
 	}
 
 	async stopTask(session: IP9NativeSession): Promise<void> {
@@ -161,12 +161,21 @@ export class P9BackendClient extends Disposable {
 		this.socket.send(JSON.stringify(payload));
 	}
 
+	/**
+	 * Send an arbitrary message to the backend (used by inline completions, etc.)
+	 */
+	sendRaw(payload: object): void {
+		if (this.socket?.readyState === WebSocket.OPEN) {
+			this.socket.send(JSON.stringify(payload));
+		}
+	}
+
 	private isCompatibleBackend(readyMessage: string): boolean {
 		return readyMessage === P9BackendClient.READY_MESSAGE || /proton9/i.test(readyMessage);
 	}
 
-	private createRunTaskPayload(session: IP9NativeSession, task: string): IP9RunTaskPayload {
-		return {
+	private createRunTaskPayload(session: IP9NativeSession, task: string, editorContext?: IP9EditorContext, mentionedFiles?: IP9MentionedFile[]): IP9RunTaskPayload {
+		const payload: IP9RunTaskPayload = {
 			type: 'run_task',
 			slot_id: session.slotId,
 			client_id: session.clientId,
@@ -176,6 +185,13 @@ export class P9BackendClient extends Disposable {
 			provider: session.provider,
 			model: session.model,
 		};
+		if (editorContext) {
+			payload.editor_context = editorContext;
+		}
+		if (mentionedFiles && mentionedFiles.length > 0) {
+			payload.mentioned_files = mentionedFiles;
+		}
+		return payload;
 	}
 
 	private createStopPayload(session: IP9NativeSession): IP9StopTaskPayload {

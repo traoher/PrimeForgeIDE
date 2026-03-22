@@ -108,7 +108,7 @@ export class Proton9SessionsView extends ViewPane {
 		const sessions = this.runtimeService.getSessions();
 		const connection = this.runtimeService.getConnectionState();
 		const activeSession = this.runtimeService.getActiveSession();
-		const status = this.runtimeService.getStatusSnapshot();
+		const status = this.runtimeService.getStatusSnapshot(activeSession?.tabId);
 		const activeActions = activeSession ? this.runtimeService.getActionEntries(activeSession.tabId) : [];
 
 		const shell = dom.append(this.bodyElement, dom.$('.proton9-master-shell'));
@@ -176,6 +176,13 @@ export class Proton9SessionsView extends ViewPane {
 			dom.append(metaRow, dom.$('span.proton9-meta-line', undefined, `session: ${activeSession.sessionId}`));
 			if (activeSession.model || activeSession.provider) {
 				dom.append(metaRow, dom.$('span.proton9-meta-line', undefined, `model: ${activeSession.model ?? activeSession.provider}`));
+			}
+			if (status.currentLane) {
+				dom.append(metaRow, dom.$('span.proton9-meta-line', undefined, `lane: ${status.currentLane}`));
+			}
+			if (status.terminalState) {
+				const terminalLabel = status.blockId ? `${status.terminalState} (${status.blockId})` : status.terminalState;
+				dom.append(metaRow, dom.$('span.proton9-meta-line', undefined, `task: ${terminalLabel}`));
 			}
 			dom.append(metaRow, dom.$('span.proton9-meta-line', undefined, `diagnostics: ${status.diagnosticCount}`));
 		}
@@ -397,6 +404,30 @@ export class Proton9SessionsView extends ViewPane {
 		const grid = dom.append(section, dom.$('.proton9-status-grid'));
 		this.renderKeyValue(grid, 'Backend', connected ? 'Connected' : 'Disconnected');
 		this.renderKeyValue(grid, 'State', this.formatStateLabel(activeSession.status));
+		if (status.currentLane) {
+			this.renderKeyValue(grid, 'Lane', status.currentLane);
+		}
+		if (status.routingEventId) {
+			this.renderKeyValue(grid, 'Route event', status.routingEventId);
+		}
+		if (status.routingReason) {
+			this.renderKeyValue(grid, 'Route reason', status.routingReason);
+		}
+		if (status.terminalState) {
+			this.renderKeyValue(grid, 'Terminal state', status.terminalState);
+		}
+		if (status.terminalEventId) {
+			this.renderKeyValue(grid, 'Terminal event', status.terminalEventId);
+		}
+		if (status.blockId) {
+			this.renderKeyValue(grid, 'Block ID', status.blockId);
+		}
+		if (status.blockCategory) {
+			this.renderKeyValue(grid, 'Block category', status.blockCategory);
+		}
+		if (status.requiredAction) {
+			this.renderKeyValue(grid, 'Required action', status.requiredAction);
+		}
 		if (status.lastTool) {
 			this.renderKeyValue(grid, 'Last tool', status.lastTool);
 		}

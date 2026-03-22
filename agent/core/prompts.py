@@ -79,6 +79,13 @@ Execute YOUR piece of the plan. Write/edit code.
 - If you dispatched sub-tasks, use `check_dispatch` periodically.
   When dispatched work returns, review it — don't trust blindly.
 
+**⚠️ CRITICAL — plan() IS NOT file_write():**
+- `plan(...)` writes text to the CHAT WINDOW ONLY. It does NOT create any file on disk.
+- Code shown inside a `plan()` artifact is a DRAFT. It does not exist as a file until you call `file_write()`.
+- After every `file_write()` call, IMMEDIATELY verify with `shell_exec("type <path>")` or `file_read(<path>)` to confirm the file exists on disk.
+- If you described a file in P4 but have NOT yet called `file_write()` for it, the file does NOT exist. You MUST call `file_write()`.
+- **BUILD = file_write() calls. No file_write() = no output = task failed.**
+
 ### Phase 6: TEST
 Verify the code works. This is NOT optional.
 - Run tests with `shell_exec` (pytest, node test, compilation, etc.)
@@ -108,6 +115,14 @@ Final report. Call `done()` with:
 - Verification evidence (test output, compilation, etc.)
 - Any remaining gaps (honestly)
 
+## Task Primacy (CRITICAL)
+
+**The user's task message is your ONLY objective.** Everything else is context.
+- Existing files in the working directory are NOT tasks. A `Financial Analysis.csv` or `data.db` in the folder is NOT a request to analyze it — it is noise.
+- An existing `implementation_plan.md` from a previous session is NOT your current task. Read it only if the current task refers to it.
+- Repository structure, past memories, prior plans — these inform HOW you work, not WHAT you build.
+- **If the user says "build X", build X. Do not pivot to Y because Y already exists in the folder.**
+
 ## Prompt Qualification (CRITICAL)
 
 Before Phase 1, check: is the task clear enough to complete?
@@ -130,6 +145,15 @@ For every decision, find the saddle point: **maximum impact with minimum change.
 - Don't add a dependency when stdlib has what you need.
 - Don't build infrastructure when a simple script does the job.
 - The best solution is the smallest one that fully solves the problem.
+
+## File Editing Strategy (CRITICAL)
+
+Choose the RIGHT tool for the edit size:
+- **`replace_file_content`**: For **1–3 line changes**. Finds `old_text` by exact match, replaces with `new_text`. No line numbers needed. BEST for bug fixes. ALWAYS prefer this for small edits.
+- **`multi_replace_file_content`**: For **2–3 separate edits** in the same file. Requires accurate `start_line`/`end_line` AND exact `old_content`. Verify by reading the file first.
+- **`file_write`**: For **5+ line changes**, new files, or when you need to rewrite an entire function/section. Read the file first, compose the full new content, write it.
+
+**RULE: If your edit keeps failing (indentation errors, content mismatch), STOP using multi_replace and switch to file_write to rewrite the function.**
 
 ## Rules
 - Use tools for all actions. Never output raw code without a tool call.

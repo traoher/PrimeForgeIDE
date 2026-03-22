@@ -16,10 +16,19 @@ from pathlib import Path
 # Add parent to path so we can import core/tools
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import websockets
 
 from core.agent import Agent
 from core.context_manager import ContextManager
+from core.task_management import TaskManagementService, TaskRouteDecision
 try:
     from core.memory_enhanced import EnhancedMemory
 except Exception:
@@ -77,6 +86,7 @@ class ForgeServer:
         self.agent: Agent | None = None  # Legacy: points to most recent agent
         self.agent_slots: dict = {}  # slot_id → {"task": asyncio.Task, "agent": Agent|None, "stop": bool, "provider": str, "model": str, "started": float}
         self.max_agent_slots: int = 9
+        self.task_manager = TaskManagementService()
         self.current_task: asyncio.Task | None = None  # Legacy compat
         self.stop_requested: bool = False  # Legacy compat
         # Cumulative token/cost tracker (persists across tasks in session)
@@ -399,6 +409,8 @@ class ForgeServer:
             await self.read_file(data, websocket)
         elif msg_type == "write_file":
             await self.write_file(data, websocket)
+        elif msg_type == "complete":
+            await self._handle_completion(data, websocket)
         elif msg_type == "list_workspace_files":
             await self.list_workspace_files(data, websocket)
         elif msg_type == "switch_session":
@@ -709,6 +721,406 @@ class ForgeServer:
             "models": models,
         }, default=str))
 
+    def _extract_json_object(self, text: str) -> dict | None:
+        text = (text or "").strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except Exception:
+            pass
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except Exception:
+                return None
+        return None
+
+    def _classify_task_mode(
+        self,
+        task_text: str,
+        working_dir: str,
+        has_workspace: bool,
+        session_context: str = "",
+        previous_mode: str | None = None,
+        previous_terminal: str | None = None,
+    ) -> TaskRouteDecision:
+        fallback = TaskRouteDecision(
+            mode="quick_edit",
+            confidence=0.35,
+            reason="Fallback route because classifier was unavailable or could not be parsed.",
+            signals=["fallback"],
+        )
+        if not self.fast_llm or task_text.strip().startswith("/"):
+            return fallback
+
+        workspace_label = "available" if has_workspace else "not_available"
+
+        # Build session context block for the classifier
+        context_lines = []
+        if previous_mode:
+            context_lines.append(f"Previous lane: {previous_mode}")
+        if previous_terminal:
+            context_lines.append(f"Previous terminal state: {previous_terminal}")
+        if session_context:
+            context_lines.append(f"Previous task summary: {session_context[:500]}")
+        session_block = "\n".join(context_lines) if context_lines else "(new session — no prior tasks)"
+
+        try:
+            response = self.fast_llm.call(
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Classify this IDE request into exactly one routing lane.\n"
+                        "Return ONLY valid JSON with this schema:\n"
+                        '{"mode":"conversation|quick_edit|project","confidence":0.0,'
+                        '"reason":"short reason","signals":["signal"],'
+                        '"can_escalate":true,"can_deescalate":false}\n\n'
+                        "Use `conversation` for chat/explanation that does not need tools or files.\n"
+                        "Use `quick_edit` for focused coding/debugging/editing work that a single agent can finish.\n"
+                        "Use `project` for multi-step project execution that benefits from orchestrator ownership, "
+                        "iteration, verification, or broader coordination.\n\n"
+                        "When session context is provided, consider whether this prompt is a \n"
+                        "continuation of the previous task or a completely new topic. \n"
+                        "A continuation of project-scope work should stay `project`. \n"
+                        "A new unrelated topic should be classified independently.\n"
+                        "Never return markdown.\n\n"
+                        f"Workspace: {workspace_label}\n"
+                        f"Working directory: {working_dir or '(none)'}\n"
+                        f"Session context:\n{session_block}\n\n"
+                        f"Prompt: {task_text[:1500]}"
+                    ),
+                }],
+                tools=None,
+            )
+            parsed = self._extract_json_object(getattr(response, "text", "") or "")
+            mode = str((parsed or {}).get("mode", "")).strip().lower()
+            if mode not in {"conversation", "quick_edit", "project"}:
+                return fallback
+            confidence = float((parsed or {}).get("confidence", 0.6) or 0.6)
+            reason = str((parsed or {}).get("reason", "")).strip() or "No reason provided by classifier."
+            signals = [str(item).strip() for item in ((parsed or {}).get("signals") or []) if str(item).strip()]
+            can_escalate = bool((parsed or {}).get("can_escalate", True))
+            can_deescalate = bool((parsed or {}).get("can_deescalate", False))
+            print(f"  [ROUTE] Classified as {mode} ({confidence:.2f}) — {reason}")
+            return TaskRouteDecision(
+                mode=mode,
+                confidence=confidence,
+                reason=reason,
+                signals=signals,
+                can_escalate=can_escalate,
+                can_deescalate=can_deescalate,
+            )
+        except Exception as e:
+            print(f"  [ROUTE] Classification error (non-fatal): {e}")
+            return fallback
+
+    async def _broadcast_route_decision(self, session_key: str, slot_id: str, decision: TaskRouteDecision):
+        state = self.task_manager.apply_route_decision(session_key, decision, slot_id=slot_id)
+        await self.broadcast("route_decision", {
+            "slot_id": slot_id,
+            "session_key": session_key,
+            "mode": state.current_mode,
+            "confidence": state.confidence,
+            "reason": state.reason,
+            "signals": state.signals,
+            "sticky": state.project_owned,
+            "event_id": state.event_id,
+            "can_escalate": decision.can_escalate,
+            "can_deescalate": decision.can_deescalate,
+        })
+
+    async def _run_conversation_task(self, session_key: str, task_text: str, slot_id: str):
+        await self.broadcast("task_started", {"task": task_text, "slot_id": slot_id})
+
+        # Build messages with session history for multi-turn conversation
+        messages = []
+
+        # System grounding (light – no full agent system prompt)
+        ws_dir = self.client_workdirs.get(list(self.clients)[0], "") if self.clients else (self.workspace_dir or "")
+        sys_parts = ["You are Proton9, a helpful and knowledgeable coding assistant."]
+        if ws_dir:
+            sys_parts.append(f"The user is working in: {ws_dir}")
+        prev_summary = self.task_manager.get_state(session_key).last_task_summary
+        if prev_summary:
+            sys_parts.append(f"Previous task context: {prev_summary}")
+        messages.append({"role": "system", "content": " ".join(sys_parts)})
+
+        # Inject recent conversation history from the ensemble (up to 10 turns)
+        try:
+            session_state = self.context._sessions.get(session_key, {})
+            active_id = session_state.get("active_id") if isinstance(session_state, dict) else None
+            if active_id:
+                ensemble = session_state.get("ensembles", {}).get(active_id)
+                if ensemble and hasattr(ensemble, "entries"):
+                    # Take last 10 entries (5 user + 5 assistant)
+                    recent = list(ensemble.entries)[-10:]
+                    for entry in recent:
+                        role = getattr(entry, "role", "user")
+                        content = getattr(entry, "content", "")
+                        if role in ("user", "assistant") and content:
+                            messages.append({"role": role, "content": content[:2000]})
+        except Exception:
+            pass  # Graceful fallback: history is best-effort
+
+        # Current prompt
+        messages.append({"role": "user", "content": task_text})
+
+        import time as _time
+        t0 = _time.time()
+        conv_resp = self.fast_llm.call(
+            messages=messages,
+            tools=None,
+        )
+        answer = (conv_resp.text or "").strip()
+        elapsed = _time.time() - t0
+
+        usage = getattr(conv_resp, "usage", {}) or {}
+        if isinstance(usage, dict):
+            in_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0
+            out_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0
+        else:
+            in_tok = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0
+            out_tok = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0
+
+        await self.broadcast("llm_token", {"text": answer, "slot_id": slot_id})
+
+        self.context.record_result(
+            session_key=session_key,
+            user_prompt=task_text,
+            result={"summary": answer, "actions": [], "files_changed": []},
+        )
+
+        self._session_tokens["input"] += in_tok
+        self._session_tokens["output"] += out_tok
+
+        if self.memory_enabled and self.memory:
+            provider = getattr(conv_resp, "actual_provider", None) or self.config.get("llm", {}).get("provider", "unknown")
+            model = getattr(conv_resp, "actual_model", None) or self.config.get("llm", {}).get("model", "unknown")
+            self.memory.record_token_usage(
+                provider=provider,
+                model=model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                session_id=session_key,
+                task_summary=f"[CONV] {task_text[:200]}",
+            )
+
+        await self.broadcast("token_update", {
+            "input_tokens": self._session_tokens["input"],
+            "output_tokens": self._session_tokens["output"],
+            "cost_usd": round(self._session_tokens["cost"], 6),
+            "slot_id": slot_id,
+        })
+
+        await self.broadcast("task_complete", {
+            "result": {
+                "summary": answer,
+                "actions": [],
+                "files_changed": [],
+                "usage": {"total_input_tokens": in_tok, "total_output_tokens": out_tok},
+                "elapsed": round(elapsed, 1),
+            },
+            "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+            "slot_id": slot_id,
+        })
+
+    def _infer_block_category(self, error_text: str) -> str:
+        lowered = (error_text or "").lower()
+        if "permission" in lowered or "access" in lowered:
+            return "permission"
+        if "timeout" in lowered:
+            return "timeout"
+        if "address already in use" in lowered or "connection" in lowered or "refused" in lowered:
+            return "environment"
+        if "not found" in lowered or "missing" in lowered:
+            return "missing_prerequisite"
+        return "general"
+
+    async def _broadcast_project_terminal(
+        self,
+        session_key: str,
+        slot_id: str,
+        terminal_state: str,
+        *,
+        summary: str,
+        required_action: str = "",
+        owner: str = "",
+        block_category: str | None = None,
+        resumable: bool = False,
+    ):
+        if terminal_state == "completed":
+            state = self.task_manager.complete(session_key, summary=summary)
+        elif terminal_state == "design_change_required":
+            state = self.task_manager.design_change_required(
+                session_key,
+                summary=summary,
+                required_action=required_action or "Review the requested outcome and adjust the design or acceptance criteria before retrying.",
+                owner=owner or "design_owner",
+            )
+        else:
+            state = self.task_manager.block(
+                session_key,
+                summary=summary,
+                required_action=required_action or "Resolve the blocker and rerun the task.",
+                owner=owner or "user",
+                block_category=block_category or "general",
+                resumable=resumable,
+            )
+        await self.broadcast("project_terminal", {
+            "slot_id": slot_id,
+            "session_key": session_key,
+            "terminal_state": state.terminal_state,
+            "event_id": state.event_id,
+            "block_id": state.block_id,
+            "block_category": state.block_category,
+            "summary": state.summary,
+            "required_action": state.required_action,
+            "owner": state.owner,
+            "resumable": state.resumable,
+        })
+
+    async def _run_project_background(
+        self,
+        websocket,
+        session_key: str,
+        original_task: str,
+        working_dir: str,
+        slot_id: str,
+        max_iterations: int | None,
+    ):
+        await self.broadcast("task_started", {
+            "task": original_task,
+            "working_dir": os.path.abspath(working_dir) if working_dir else "",
+            "context_enabled": True,
+            "context_state": self.context.get_session_state(session_key),
+            "slot_id": slot_id,
+            "lane": "project",
+        })
+
+        try:
+            # Resolve orchestrator path relative to this file (not CWD)
+            import importlib.util as _ilu
+            _orch_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "orchestrator.py")
+            if os.path.isfile(_orch_path):
+                _spec = _ilu.spec_from_file_location("orchestrator", _orch_path)
+                _mod = _ilu.module_from_spec(_spec)
+                _spec.loader.exec_module(_mod)
+                Orchestrator = _mod.Orchestrator
+            else:
+                from scripts.orchestrator import Orchestrator
+
+            loop = asyncio.get_event_loop()
+            iteration_counter = {"value": 0}
+
+            async def dispatch_iteration(iteration_task: str, iteration_workdir: str) -> dict:
+                iteration_counter["value"] += 1
+                await self.broadcast("task_info", {
+                    "slot_id": slot_id,
+                    "message": f"Project iteration {iteration_counter['value']} started.",
+                })
+                return await loop.run_in_executor(
+                    None,
+                    lambda: self._run_agent_sync(
+                        iteration_task,
+                        iteration_workdir,
+                        max_iterations,
+                        iteration_task,
+                        "",
+                        slot_id,
+                    ),
+                )
+
+            orchestrator = Orchestrator(
+                working_dir=working_dir or self.workspace_dir or ".",
+                max_iterations=int(max_iterations or 3),
+            )
+            report = await orchestrator.execute(
+                task=original_task,
+                dispatch_func=dispatch_iteration,
+                save_report=True,
+            )
+
+            final_review = (report.get("reviews") or [{}])[-1] if report.get("reviews") else {}
+            verdict = str(report.get("verdict", "ERROR")).upper()
+            summary = str(final_review.get("fix_instructions") or final_review.get("issues") or report.get("task") or "").strip()
+            if isinstance(final_review.get("issues"), list) and final_review.get("issues"):
+                summary = "; ".join(str(item) for item in final_review.get("issues")[:3])
+
+            if verdict == "PASS":
+                terminal_state = "completed"
+                required_action = ""
+                owner = ""
+                block_category = None
+            elif verdict == "FAIL":
+                terminal_state = "design_change_required"
+                required_action = str(final_review.get("fix_instructions") or "Review the orchestrator findings and revise the design or constraints before retrying.")
+                owner = "design_owner"
+                block_category = None
+            else:
+                terminal_state = "blocked"
+                required_action = "Inspect the reported error, fix the prerequisite or environment issue, and rerun the project task."
+                owner = "user"
+                block_category = self._infer_block_category(summary)
+
+            await self._broadcast_project_terminal(
+                session_key,
+                slot_id,
+                terminal_state,
+                summary=summary or "Project execution finished.",
+                required_action=required_action,
+                owner=owner,
+                block_category=block_category,
+                resumable=terminal_state == "blocked",
+            )
+
+            final_result = {
+                "summary": summary or "Project execution finished.",
+                "files_changed": report.get("files_produced", []),
+                "project_report": report,
+                "terminal_state": terminal_state,
+            }
+            self.context.record_result(
+                session_key=session_key,
+                user_prompt=original_task,
+                result=final_result,
+            )
+            await self.broadcast("task_complete", {
+                "result": final_result,
+                "slot_id": slot_id,
+                "cumulative_usage": self._get_cumulative_usage(),
+                "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
+            })
+        except Exception as e:
+            await self._broadcast_project_terminal(
+                session_key,
+                slot_id,
+                "blocked",
+                summary=str(e),
+                required_action="Inspect the project-lane runtime error and resolve the blocker before retrying.",
+                owner="user",
+                block_category=self._infer_block_category(str(e)),
+                resumable=True,
+            )
+            self.context.record_result(
+                session_key=session_key,
+                user_prompt=original_task,
+                result=None,
+                error_text=str(e),
+            )
+            await self.broadcast("task_error", {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "slot_id": slot_id,
+            })
+        finally:
+            self.current_task = None
+            if slot_id in self.agent_slots:
+                del self.agent_slots[slot_id]
+            await self.broadcast("slot_complete", {"slot_id": slot_id})
+
     async def run_task(self, data: dict, websocket, session_key: str):
         """Run an agent task and stream events."""
         task_text = data.get("task", "") or ""
@@ -755,106 +1167,39 @@ class ForgeServer:
 
         if task_text.strip().lower() in {"/clear", "/newtopic"}:
             self.context.clear_session(session_key)
+            # Also reset task management state so classifier treats next prompt as fresh
+            state = self.task_manager.get_state(session_key)
+            state.last_task_summary = ""
+            state.current_mode = None
+            state.terminal_state = None
+            state.project_owned = False
             await websocket.send(json.dumps({
                 "type": "info",
                 "message": "Context cleared. Next prompt starts a fresh ensemble.",
             }))
             return
 
-        # ─── Intent Classification (LLM decides, not us) ───
-        if self.fast_llm and not task_text.strip().startswith("/"):
-            try:
-                classify_resp = self.fast_llm.call(
-                    messages=[{
-                        "role": "user",
-                        "content": (
-                            "Classify this user prompt into exactly one category.\n"
-                            "Reply with ONLY the single word, nothing else.\n\n"
-                            "CONVERSATION — greetings, casual chat, general knowledge, "
-                            "simple math, opinions, anything NOT requiring "
-                            "reading/writing files, running code, or using tools\n"
-                            "AGENT — coding tasks, file operations, debugging, project work, "
-                            "anything that needs tools or file system access\n\n"
-                            f"Prompt: {task_text.strip()[:500]}\n\nCategory:"
-                        ),
-                    }],
-                    tools=None,
-                )
-                intent = (classify_resp.text or "").strip().upper()
-                print(f"  [INTENT] Classified as: {intent}")
+        # Snapshot previous session state BEFORE begin_task() resets it
+        # (begin_task clears current_mode and terminal_state — we need them for context)
+        prev_state = self.task_manager.get_state(session_key)
+        prev_mode = prev_state.current_mode
+        prev_terminal = prev_state.terminal_state
+        prev_summary = prev_state.last_task_summary
 
-                if "CONVERSATION" in intent:
-                    print(f"  [INTENT] Short-circuit — answering directly")
-                    await self.broadcast("task_started", {"task": task_text, "slot_id": slot_id})
+        self.task_manager.begin_task(session_key, slot_id=slot_id)
+        route = self._classify_task_mode(
+            task_text, working_dir, has_workspace,
+            session_context=prev_summary,
+            previous_mode=prev_mode,
+            previous_terminal=prev_terminal,
+        )
+        await self._broadcast_route_decision(session_key, slot_id, route)
 
-                    import time as _time
-                    t0 = _time.time()
-
-                    conv_resp = self.fast_llm.call(
-                        messages=[{"role": "user", "content": task_text}],
-                        tools=None,
-                    )
-                    answer = (conv_resp.text or "").strip()
-                    elapsed = _time.time() - t0
-
-                    # Extract token usage from response
-                    usage = getattr(conv_resp, "usage", {}) or {}
-                    if isinstance(usage, dict):
-                        in_tok = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0) or 0
-                        out_tok = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0) or 0
-                    else:
-                        in_tok = getattr(usage, "input_tokens", 0) or getattr(usage, "prompt_tokens", 0) or 0
-                        out_tok = getattr(usage, "output_tokens", 0) or getattr(usage, "completion_tokens", 0) or 0
-
-                    # Stream answer to sidebar
-                    await self.broadcast("llm_token", {"text": answer, "slot_id": slot_id})
-
-                    # Record to conversation context
-                    self.context.record_result(
-                        session_key=session_key,
-                        user_prompt=task_text,
-                        result={"summary": answer, "actions": [], "files_changed": []},
-                    )
-
-                    # Accumulate session tokens
-                    self._session_tokens["input"] += in_tok
-                    self._session_tokens["output"] += out_tok
-
-                    # Record to SQLite — use ACTUAL provider/model, not configured
-                    if self.memory_enabled and self.memory:
-                        provider = getattr(conv_resp, 'actual_provider', None) or self.config.get("llm", {}).get("provider", "unknown")
-                        model = getattr(conv_resp, 'actual_model', None) or self.config.get("llm", {}).get("model", "unknown")
-                        self.memory.record_token_usage(
-                            provider=provider, model=model,
-                            input_tokens=in_tok, output_tokens=out_tok,
-                            session_id=session_key,
-                            task_summary=f"[CONV] {task_text[:200]}",
-                        )
-
-                    await self.broadcast("token_update", {
-                        "input_tokens": self._session_tokens["input"],
-                        "output_tokens": self._session_tokens["output"],
-                        "cost_usd": round(self._session_tokens["cost"], 6),
-                        "slot_id": slot_id,
-                    })
-
-                    await self.broadcast("task_complete", {
-                        "result": {
-                            "summary": answer,
-                            "actions": [],
-                            "files_changed": [],
-                            "usage": {"total_input_tokens": in_tok, "total_output_tokens": out_tok},
-                            "elapsed": round(elapsed, 1),
-                        },
-                        "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
-                        "slot_id": slot_id,
-                    })
-                    print(f"  [INTENT] Done ({in_tok} in / {out_tok} out, {elapsed:.1f}s)")
-                    return  # Skip full agent pipeline
-
-            except Exception as e:
-                print(f"  [INTENT] Classification error (non-fatal): {e}")
-                # Fall through to full agent pipeline
+        if route.mode == "conversation":
+            await self._run_conversation_task(session_key, task_text, slot_id)
+            # Capture summary for context-aware classification on next prompt
+            self.task_manager.get_state(session_key).last_task_summary = f"Conversation: {task_text[:200]}"
+            return
 
         contextual_task = self.context.build_contextual_task(
             session_key=session_key,
@@ -907,9 +1252,55 @@ class ForgeServer:
             map_section = f"\n## Project Structure (auto-indexed)\n```\n{project_map}\n```\n"
             collapsed_context = (collapsed_context + map_section) if collapsed_context else map_section
 
-        # Inject active file context from IDE (if provided)
+        # Inject active file context from IDE
+        # Support both new editor_context (from native PIDE) and legacy active_file format
+        editor_ctx = data.get("editor_context") or {}
         active_file = data.get("active_file")
-        if active_file and isinstance(active_file, dict) and active_file.get("path"):
+        if editor_ctx and isinstance(editor_ctx, dict) and editor_ctx.get("active_file"):
+            # New format from native PIDE
+            af_path = editor_ctx.get("active_file", "")
+            af_line = editor_ctx.get("cursor_line", 0)
+            af_sel = editor_ctx.get("selection", "")
+            af_visible = editor_ctx.get("visible_range") or {}
+            af_open_files = editor_ctx.get("open_files") or []
+            af_ext = os.path.splitext(af_path)[1].lstrip(".")
+            lang_map = {"py": "python", "ts": "typescript", "js": "javascript", "tsx": "typescriptreact", "jsx": "javascriptreact", "rs": "rust", "go": "go", "java": "java", "cpp": "cpp", "c": "c", "cs": "csharp", "rb": "ruby", "md": "markdown"}
+            af_lang = lang_map.get(af_ext, af_ext)
+
+            af_section = f"\n## Active Editor Context\n"
+            af_section += f"File: `{af_path}` ({af_lang})\n"
+            af_section += f"Cursor: line {af_line}\n"
+            if af_sel:
+                af_section += f"Selected text:\n```{af_lang}\n{af_sel}\n```\n"
+            if af_visible:
+                af_section += f"Visible lines: {af_visible.get('start', 0)}-{af_visible.get('end', 0)}\n"
+            collapsed_context = (collapsed_context + af_section) if collapsed_context else af_section
+            print(f"  [CONTEXT] Active file: {af_path} (line {af_line}, {af_lang})")
+
+            if af_open_files:
+                open_section = "\n## Open Files in IDE\n"
+                open_section += "\n".join(f"- `{fp}`" for fp in af_open_files[:20]) + "\n"
+                collapsed_context = (collapsed_context + open_section) if collapsed_context else open_section
+
+            # Diagnostics from editor_context
+            diag_entries = editor_ctx.get("diagnostics") or []
+            if diag_entries:
+                diag_lines = []
+                for d in diag_entries[:20]:
+                    sev = d.get("severity", "error")
+                    dpath = d.get("file", "")
+                    dline = d.get("line", 0)
+                    dmsg = d.get("message", "")
+                    diag_lines.append(f"  [{sev.upper()}] {dpath}:{dline} -- {dmsg}")
+                if diag_lines:
+                    diag_section = "\n## IDE Diagnostics\n"
+                    diag_section += "The following errors/warnings are reported by the IDE:\n"
+                    diag_section += "\n".join(diag_lines) + "\n"
+                    collapsed_context = (collapsed_context + diag_section) if collapsed_context else diag_section
+                    print(f"  [CONTEXT] Diagnostics: {len(diag_lines)} issues injected")
+
+        elif active_file and isinstance(active_file, dict) and active_file.get("path"):
+            # Legacy flat format from old GUI
             af_path = active_file.get("path", "")
             af_lang = active_file.get("language", "")
             af_line = active_file.get("cursorLine", 0)
@@ -962,29 +1353,53 @@ class ForgeServer:
         mentioned_files = data.get("mentioned_files") or []
         if mentioned_files and isinstance(mentioned_files, list):
             mention_section = "\n## Referenced Files (@mentions)\n"
+            injected_count = 0
             for mf in mentioned_files[:5]:
                 mf_path = mf.get("path", "")
                 mf_content = mf.get("content", "")
+                if not mf_path:
+                    continue
+                # Auto-read content from disk if PIDE sent path-only
+                if not mf_content and os.path.isfile(mf_path):
+                    try:
+                        with open(mf_path, "r", encoding="utf-8", errors="replace") as f:
+                            mf_content = f.read()[:50000]  # Cap at 50KB
+                    except Exception as e:
+                        mf_content = f"(Could not read: {e})"
                 if mf_path and mf_content:
                     ext = mf_path.rsplit(".", 1)[-1] if "." in mf_path else ""
                     mention_section += f"\n### `{mf_path}`\n```{ext}\n{mf_content}\n```\n"
-            collapsed_context = (collapsed_context + mention_section) if collapsed_context else mention_section
-            print(f"  [CONTEXT] @mentions: {len(mentioned_files)} files injected")
+                    injected_count += 1
+            if injected_count > 0:
+                collapsed_context = (collapsed_context + mention_section) if collapsed_context else mention_section
+                print(f"  [CONTEXT] @mentions: {injected_count} files injected")
 
-        task_obj = asyncio.create_task(
-            self._run_task_background(
-                websocket=websocket,
-                session_key=session_key,
-                original_task=task_text,
-                contextual_task=contextual_task,
-                working_dir=working_dir,
-                max_iterations=max_iterations,
-                context_enabled=bool(context_enabled),
-                context_state=context_state,
-                collapsed_context=collapsed_context,
-                slot_id=slot_id,
+        if route.mode == "project":
+            task_obj = asyncio.create_task(
+                self._run_project_background(
+                    websocket=websocket,
+                    session_key=session_key,
+                    original_task=task_text,
+                    working_dir=working_dir,
+                    slot_id=slot_id,
+                    max_iterations=max_iterations,
+                )
             )
-        )
+        else:
+            task_obj = asyncio.create_task(
+                self._run_task_background(
+                    websocket=websocket,
+                    session_key=session_key,
+                    original_task=task_text,
+                    contextual_task=contextual_task,
+                    working_dir=working_dir,
+                    max_iterations=max_iterations,
+                    context_enabled=bool(context_enabled),
+                    context_state=context_state,
+                    collapsed_context=collapsed_context,
+                    slot_id=slot_id,
+                )
+            )
         self.agent_slots[slot_id] = {
             "task": task_obj,
             "agent": None,
@@ -1023,6 +1438,7 @@ class ForgeServer:
             return
 
         self.client_workdirs[websocket] = abs_path
+        self.workspace_dir = abs_path
         await websocket.send(json.dumps({
             "type": "workspace_set",
             "success": True,
@@ -1297,6 +1713,10 @@ class ForgeServer:
                 "persistent_usage": self.memory.get_token_usage_summary() if self.memory_enabled and self.memory else {},
                 "slot_id": slot_id,
             })
+            # Capture task summary for context-aware classification on next prompt
+            task_summary_text = (result or {}).get("summary", "") or ""
+            short_summary = f"{original_task[:200]}. Result: {task_summary_text[:300]}" if task_summary_text else original_task[:400]
+            self.task_manager.get_state(session_key).last_task_summary = short_summary
         except Exception as e:
             self.context.record_result(
                 session_key=session_key,
@@ -1309,6 +1729,8 @@ class ForgeServer:
                 "traceback": traceback.format_exc(),
                 "slot_id": slot_id,
             })
+            # Capture error context for next prompt classification
+            self.task_manager.get_state(session_key).last_task_summary = f"Error: {original_task[:200]}. {str(e)[:200]}"
         finally:
             self.current_task = None  # Legacy compat
             # Clean up slot

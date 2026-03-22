@@ -66,6 +66,16 @@ class GeminiProvider:
         
         self._genai = genai
 
+    def _is_hard_quota_error(self, error_str: str) -> bool:
+        text = (error_str or "").lower()
+        return (
+            "spending cap" in text
+            or "billing" in text
+            or "resource_exhausted" in text
+            or "exceeded its spending cap" in text
+            or "insufficient quota" in text
+        )
+
     def call(self, messages: list, tools: list = None, images: list = None) -> LLMResponse:
         """
         Call Gemini with messages, optional tools (function declarations), and optional images.
@@ -146,6 +156,7 @@ class GeminiProvider:
                     # 429 = Quota or Rate Limit. 400 = "API key not valid" (if someone put a bad key in .env). 403 = Forbidden.
                     is_quota = "429" in error_str or "quota" in error_str or "exhausted" in error_str or "400" in error_str or "403" in error_str
                     is_server_error = "500" in error_str or "internal error" in error_str or "503" in error_str
+                    is_hard_quota = self._is_hard_quota_error(error_str)
 
                     if is_quota or is_server_error:
                         print(f"\n  [LLM GATEWAY] {current_model} failed with API Key #{self.current_key_idx + 1} (Quota/Bad/Server Error: {e}).")
@@ -158,9 +169,12 @@ class GeminiProvider:
                             print(f"  [LLM GATEWAY] Rotating to API Key #{self.current_key_idx + 1}...")
                             self.client = self._genai.Client(api_key=self.api_keys[self.current_key_idx])
                         else:
-                            print(f"  [LLM FALLBACK] Overloaded on all {len(self.api_keys)} API keys for {current_model}. Pausing for 60s...")
-                            time.sleep(60)
-                            # After the 60s cooldown, we break the key loop and let the outer loop try the next fallback model.
+                            if is_hard_quota:
+                                print(f"  [LLM FALLBACK] Hard quota exhaustion for {current_model}. Skipping cooldown and trying next fallback immediately...")
+                            else:
+                                print(f"  [LLM FALLBACK] Overloaded on all {len(self.api_keys)} API keys for {current_model}. Pausing for 60s...")
+                                time.sleep(60)
+                            # After cooldown, or immediately for hard quota exhaustion, try the next fallback model.
                             break
                     else:
                         raise  # Raise immediately if it's a token context length error type of 400
@@ -848,11 +862,11 @@ class LLMGateway:
     Supports Gemini, OpenAI (DeepSeek, Qwen), and Anthropic models interchangeably.
     """
 
-    FALLBACK_ORDER = ["deepseek", "openai", "anthropic", "gemini"]
+    FALLBACK_ORDER = ["gemini", "deepseek", "openai", "anthropic"]
 
     def __init__(
         self,
-        provider: str = "deepseek",
+        provider: str = "gemini",
         model: str = None,
         call_timeout_seconds: int | float | None = None,
         throttle_max_wait_seconds: int | float | None = None,
@@ -1059,6 +1073,9 @@ class LLMGateway:
         text = str(exc).lower()
         if "timeout" in text or "timed out" in text or "etimedout" in text:
             return "timeout"
+        # Hard quota = spending cap exhausted, billing issues — waiting won't help
+        if any(marker in text for marker in ("spending cap", "billing", "insufficient quota")):
+            return "hard_quota"
         # ⚠️ CRITICAL — Do NOT remove this rate_limit classification.
         # It enables the escalating 30s/60s/90s backoff in _call_with_retries.
         if any(marker in text for marker in ("429", "rate limit", "rate_limit", "quota", "resource exhausted", "too many requests", "tokens per minute")):
@@ -1079,6 +1096,11 @@ class LLMGateway:
                 return self._call_provider_with_timeout(messages, tools=tools, images=images, provider=use_provider)
             except Exception as e:
                 kind = self._error_kind(e)
+
+                # Hard quota (spending cap) — skip ALL retries, fall through to next provider immediately
+                if kind == "hard_quota":
+                    print(f"  [LLM] {provider_label} hard quota exhausted (spending cap/billing): {e}. Skipping retries.", flush=True)
+                    return None
 
                 # ⚠️ CRITICAL — Do NOT remove this rate limit handler.
                 # Without it, 429/TPM errors crash the agent immediately.

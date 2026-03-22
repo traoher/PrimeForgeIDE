@@ -17,6 +17,11 @@ import { P9SessionService } from '../browser/proton9SessionService.js';
 import { P9_SESSIONS_VIEW_ID, P9_VIEW_CONTAINER_ID } from '../common/proton9Types.js';
 import '../browser/proton9RuntimeService.js';
 import { Proton9SessionsView } from '../browser/proton9SessionsView.js';
+import { IP9RuntimeService } from '../common/proton9RuntimeService.js';
+import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
+import { INotificationService, Severity } from '../../../../platform/notification/common/notification.js';
+import { CommandsRegistry } from '../../../../platform/commands/common/commands.js';
+import { ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
 
 registerSingleton(IP9SessionService, P9SessionService, InstantiationType.Delayed);
 
@@ -41,6 +46,35 @@ Registry.as<IViewsRegistry>(ViewContainerExtensions.ViewsRegistry).registerViews
 	ctorDescriptor: new SyncDescriptor(Proton9SessionsView),
 }], proton9ViewContainer);
 
+// ── Commands ──────────────────────────────────────────────────────────
+CommandsRegistry.registerCommand('Proton9.sendTask', async (accessor: ServicesAccessor) => {
+	const quickInput = accessor.get(IQuickInputService);
+	const runtimeService = accessor.get(IP9RuntimeService);
+
+	const task = await quickInput.input({
+		title: 'Proton9: Run Task',
+		placeHolder: 'e.g. "Fix the login bug" or "Add unit tests for auth"',
+	});
+	if (task) {
+		const session = runtimeService.getActiveSession();
+		if (session) {
+			runtimeService.runTask(session.tabId, task);
+		}
+	}
+});
+
+CommandsRegistry.registerCommand('Proton9.toggleAutocomplete', (accessor: ServicesAccessor) => {
+	const runtimeService = accessor.get(IP9RuntimeService);
+	const notificationService = accessor.get(INotificationService);
+
+	const enabled = runtimeService.toggleAutocomplete();
+	notificationService.notify({
+		severity: Severity.Info,
+		message: `Proton9 Autocomplete: ${enabled ? 'ON' : 'OFF'}`,
+	});
+});
+
+// ── Bootstrap ─────────────────────────────────────────────────────────
 class Proton9BootstrapContribution implements IWorkbenchContribution {
 	static readonly ID = 'workbench.contrib.proton9.bootstrap';
 
