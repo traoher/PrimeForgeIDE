@@ -778,10 +778,18 @@ class ForgeServer:
                         '{"mode":"conversation|quick_edit|project","confidence":0.0,'
                         '"reason":"short reason","signals":["signal"],'
                         '"can_escalate":true,"can_deescalate":false}\n\n'
-                        "Use `conversation` for chat/explanation that does not need tools or files.\n"
-                        "Use `quick_edit` for focused coding/debugging/editing work that a single agent can finish.\n"
+                        "Use `conversation` ONLY for pure chat that needs NO tools: "
+                        "greetings, opinions, explanations from training knowledge, thanks.\n"
+                        "Use `quick_edit` for ANY request that requires tools — including:\n"
+                        "  - URLs, web links, video links (needs web_fetch/video tools)\n"
+                        "  - 'search for X', 'look up X', 'find X online' (needs web_search)\n"
+                        "  - 'summarize this video/page/article' (needs fetch + analysis)\n"
+                        "  - file reads, writes, edits, code changes, running commands\n"
+                        "  - focused coding, debugging, or editing a single agent can finish\n"
                         "Use `project` for multi-step project execution that benefits from orchestrator ownership, "
                         "iteration, verification, or broader coordination.\n\n"
+                        "RULE: If the prompt contains a URL or asks to fetch/search/read external content, "
+                        "it is NEVER conversation — use quick_edit.\n\n"
                         "When session context is provided, consider whether this prompt is a \n"
                         "continuation of the previous task or a completely new topic. \n"
                         "A continuation of project-scope work should stay `project`. \n"
@@ -838,15 +846,40 @@ class ForgeServer:
         # Build messages with session history for multi-turn conversation
         messages = []
 
-        # System grounding (light – no full agent system prompt)
+        # System grounding — rich identity so the LLM knows who it is
         ws_dir = self.client_workdirs.get(list(self.clients)[0], "") if self.clients else (self.workspace_dir or "")
-        sys_parts = ["You are Proton9, a helpful and knowledgeable coding assistant."]
+        llm_cfg = self.config.get("llm", {})
+        model_name = llm_cfg.get("model", "unknown")
+        provider_name = llm_cfg.get("provider", "unknown")
+
+        sys_parts = [
+            "You are Proton9, an autonomous AI coding agent created by PrimeNexus.",
+            f"You are powered by the {provider_name}/{model_name} language model.",
+            "You run inside PrimeForge IDE (PIDE), a custom VS Code fork built for autonomous engineering.",
+            "",
+            "When running as an agent (task mode), you have access to these tools:",
+            "- file_read, file_write, file_search, file_list — read/write/search files",
+            "- replace_file_content, multi_replace_file_content — precise code edits",
+            "- shell_exec — run shell commands (PowerShell on Windows)",
+            "- code_search, symbol_search — semantic code search",
+            "- web_search, web_fetch — search the web and fetch URLs",
+            "- browser_open, browser_screenshot — control a browser",
+            "- memory_search, memory_store — persistent project memory",
+            "- dispatch_task, check_dispatch — delegate sub-tasks to other agents",
+            "",
+            "Right now you are in CONVERSATION mode (no tools active).",
+            "If the user asks something that requires tools (file operations, web search,",
+            "running commands, code changes), suggest they run it as a task instead,",
+            "or offer to answer from your training knowledge.",
+            "",
+            "Be concise, accurate, and helpful. Use markdown formatting.",
+        ]
         if ws_dir:
             sys_parts.append(f"The user is working in: {ws_dir}")
         prev_summary = self.task_manager.get_state(session_key).last_task_summary
         if prev_summary:
             sys_parts.append(f"Previous task context: {prev_summary}")
-        messages.append({"role": "system", "content": " ".join(sys_parts)})
+        messages.append({"role": "system", "content": "\n".join(sys_parts)})
 
         # Inject recent conversation history from the ensemble (up to 10 turns)
         try:
@@ -1179,27 +1212,49 @@ class ForgeServer:
             }))
             return
 
-        # Snapshot previous session state BEFORE begin_task() resets it
-        # (begin_task clears current_mode and terminal_state — we need them for context)
-        prev_state = self.task_manager.get_state(session_key)
-        prev_mode = prev_state.current_mode
-        prev_terminal = prev_state.terminal_state
-        prev_summary = prev_state.last_task_summary
+        # ── Fast-path: rule-based conversation detection (no LLM classifier) ──
+        # Catches obvious greetings/chat so they skip the heavy agent pipeline.
+        # Anything ambiguous still goes to the full agent (which has tools and can decide).
+        _lower = task_text.strip().lower()
+        _is_trivial_chat = (
+            len(task_text.strip()) < 80
+            and not any(sig in _lower for sig in (
+                "http", "www.", ".com", ".py", ".ts", ".js", ".go", ".rs",
+                "file", "code", "write", "edit", "fix", "debug", "build",
+                "create", "run", "test", "search", "find", "grep", "git",
+                "refactor", "deploy", "install", "delete", "remove",
+                "implement", "add", "update", "change", "modify",
+                "analyze", "summarize", "fetch", "download", "read",
+                "explain this", "what does", "how to", "show me",
+                "shell", "terminal", "command", "script", "function",
+                "class", "import", "module", "package", "error",
+                "bug", "crash", "slow", "performance", "memory",
+                "@", "/",
+            ))
+        )
 
         self.task_manager.begin_task(session_key, slot_id=slot_id)
-        route = self._classify_task_mode(
-            task_text, working_dir, has_workspace,
-            session_context=prev_summary,
-            previous_mode=prev_mode,
-            previous_terminal=prev_terminal,
-        )
-        await self._broadcast_route_decision(session_key, slot_id, route)
 
-        if route.mode == "conversation":
+        if _is_trivial_chat and self.fast_llm:
+            route = TaskRouteDecision(
+                mode="conversation",
+                confidence=0.95,
+                reason="Rule-based: short prompt with no tool-requiring signals.",
+                signals=["heuristic_chat"],
+            )
+            await self._broadcast_route_decision(session_key, slot_id, route)
             await self._run_conversation_task(session_key, task_text, slot_id)
-            # Capture summary for context-aware classification on next prompt
             self.task_manager.get_state(session_key).last_task_summary = f"Conversation: {task_text[:200]}"
             return
+
+        # ── Agent path: full pipeline with tools ──
+        route = TaskRouteDecision(
+            mode="agent",
+            confidence=1.0,
+            reason="Agent path: full tool access, self-classifies internally.",
+            signals=["single_path"],
+        )
+        await self._broadcast_route_decision(session_key, slot_id, route)
 
         contextual_task = self.context.build_contextual_task(
             session_key=session_key,
@@ -1374,32 +1429,21 @@ class ForgeServer:
                 collapsed_context = (collapsed_context + mention_section) if collapsed_context else mention_section
                 print(f"  [CONTEXT] @mentions: {injected_count} files injected")
 
-        if route.mode == "project":
-            task_obj = asyncio.create_task(
-                self._run_project_background(
-                    websocket=websocket,
-                    session_key=session_key,
-                    original_task=task_text,
-                    working_dir=working_dir,
-                    slot_id=slot_id,
-                    max_iterations=max_iterations,
-                )
+        # Always run via agent path — agent can escalate to orchestrator if needed
+        task_obj = asyncio.create_task(
+            self._run_task_background(
+                websocket=websocket,
+                session_key=session_key,
+                original_task=task_text,
+                contextual_task=contextual_task,
+                working_dir=working_dir,
+                max_iterations=max_iterations,
+                context_enabled=bool(context_enabled),
+                context_state=context_state,
+                collapsed_context=collapsed_context,
+                slot_id=slot_id,
             )
-        else:
-            task_obj = asyncio.create_task(
-                self._run_task_background(
-                    websocket=websocket,
-                    session_key=session_key,
-                    original_task=task_text,
-                    contextual_task=contextual_task,
-                    working_dir=working_dir,
-                    max_iterations=max_iterations,
-                    context_enabled=bool(context_enabled),
-                    context_state=context_state,
-                    collapsed_context=collapsed_context,
-                    slot_id=slot_id,
-                )
-            )
+        )
         self.agent_slots[slot_id] = {
             "task": task_obj,
             "agent": None,
@@ -1620,6 +1664,26 @@ class ForgeServer:
                     contextual_task, working_dir, max_iterations, original_task, collapsed_context, slot_id
                 ),
             )
+
+            # Handle agent self-escalation to orchestrator
+            if isinstance(result, dict) and result.get("escalated"):
+                reason = result.get("reason", "Agent requested orchestrator.")
+                print(f"  [ESCALATE] Agent escalated: {reason}")
+                await self.broadcast("task_info", {
+                    "slot_id": slot_id,
+                    "message": f"Escalating to orchestrator: {reason}",
+                })
+                # Re-dispatch through orchestrator path
+                await self._run_project_background(
+                    websocket=websocket,
+                    session_key=session_key,
+                    original_task=original_task,
+                    working_dir=working_dir,
+                    slot_id=slot_id,
+                    max_iterations=max_iterations,
+                )
+                return  # _run_project_background handles its own completion events
+
             self.context.record_result(
                 session_key=session_key,
                 user_prompt=original_task,
@@ -1775,9 +1839,15 @@ class ForgeServer:
         # Monkey-patch the agent's print methods to also broadcast events
         original_print_action = agent._print_action
         original_print_result = agent._print_result
+        _last_tool_name = [None]  # Track for result filtering
 
         def patched_print_action(step, tool_name, tool_args):
             original_print_action(step, tool_name, tool_args)
+            _last_tool_name[0] = tool_name
+            # Skip broadcasting done/plan to action feed — their content
+            # belongs in the transcript/task_complete, not the action log
+            if tool_name in ("done", "plan"):
+                return
             # Queue an event for the GUI
             asyncio.run_coroutine_threadsafe(
                 self.broadcast("action", {
@@ -1791,6 +1861,9 @@ class ForgeServer:
 
         def patched_print_result(result):
             original_print_result(result)
+            # Skip broadcasting done/plan results — summary is in task_complete
+            if _last_tool_name[0] in ("done", "plan"):
+                return
             asyncio.run_coroutine_threadsafe(
                 self.broadcast("result", {
                     "success": result.success,
@@ -1839,6 +1912,12 @@ class ForgeServer:
 
         try:
             return agent.run(task, event_callback=stream_event, raw_task=raw_task)
+        except Exception as e:
+            # Check for agent self-escalation
+            from tools.escalation import ProjectEscalation
+            if isinstance(e, ProjectEscalation):
+                return {"escalated": True, "reason": e.reason, "task": raw_task or task}
+            raise
         finally:
             self.agent = None
             # Clean up slot agent reference

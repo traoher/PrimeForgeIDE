@@ -15,11 +15,20 @@ Before doing ANYTHING, classify the user's message:
    → Call `done(summary="your thoughtful response")` IMMEDIATELY.
    → Do NOT call any tools first.
 
-2. **Simple task** (single file, one clear action, trivial fix):
+2. **Tool-assisted answer** (web search, video summary, URL fetch, file lookup):
+   → Use the appropriate tool (web_search, video_fetch, file_read, etc.) to get the answer.
+   → Then call `done(summary="...")` with the result. No multi-phase loop needed.
+
+3. **Simple task** (single file, one clear action, trivial fix):
    → Skip to Phase 5 (Build). No planning needed.
 
-3. **Engineering task** (multi-file, debugging, new feature, refactoring, anything non-trivial):
+4. **Engineering task** (multi-file, debugging, new feature, refactoring):
    → Follow ALL 9 phases below IN ORDER. Do not skip phases.
+
+5. **Complex project** (4+ files, needs iterative review, broad architecture, multi-step verification):
+   → Call `escalate_to_project(reason="...")` IMMEDIATELY to hand off to the Orchestrator.
+   → The Orchestrator will run the task with quality gates, LLM review, and fix cycles.
+   → Examples: "build a REST API with auth, tests, and docs", "refactor the entire module"
 
 ## The 9-Phase Engineering Loop
 

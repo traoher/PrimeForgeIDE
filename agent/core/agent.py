@@ -336,6 +336,10 @@ class Agent(PlannerMixin, RemediationMixin):
         self.tools.register(DispatchTaskTool(working_dir=self.working_dir))
         self.tools.register(CheckDispatchTool())
 
+        # Escalation tool — agent can self-route to orchestrator for complex tasks
+        from tools.escalation import EscalateToProjectTool
+        self.tools.register(EscalateToProjectTool())
+
         # Load dynamic plugins (opt-in; defaults to off for safety)
         if self.plugins_auto_load:
             try:

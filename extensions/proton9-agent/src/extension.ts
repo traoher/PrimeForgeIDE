@@ -11,13 +11,21 @@
  */
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 
 let serverProcess: ChildProcess | null = null;
 let outputChannel: vscode.OutputChannel;
 
 function startP9Server(extensionPath: string): ChildProcess | null {
-    const agentDir = path.join(extensionPath, '..', '..', 'agent');
+    const ideRoot = path.resolve(extensionPath, '..', '..');
+    const workspaceRoot = path.resolve(ideRoot, '..');
+    const preferredAgentDir = path.join(workspaceRoot, 'P9AE', 'runtime', 'agent');
+    const transitionalAgentDir = path.join(workspaceRoot, 'runtime', 'agent');
+    const legacyAgentDir = path.join(extensionPath, '..', '..', 'agent');
+    const agentDir =
+        [preferredAgentDir, transitionalAgentDir, legacyAgentDir].find(candidate => fs.existsSync(candidate)) ??
+        legacyAgentDir;
     const entryPoint = path.join(agentDir, 'core', 'server.py');
 
     outputChannel.appendLine('[Pide] Starting P9 server...');
